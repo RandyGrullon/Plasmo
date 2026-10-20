@@ -1,0 +1,658 @@
+import { Viewer } from "/viewer.js";
+import { icon, hydrateIcons } from "/icons.js";
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const state = {
+  config: null,
+  forms: [],
+  project: null,
+  form: null,
+  values: {},
+  version: null,
+  job: null,
+  chat: [],
+  imgView: "recorte",
+  status: null,
+};
+let viewer = null;
+
+// ------------------------------------------------------------------ API
+async function api(path, opts = {}) {
+  const headers = { "X-Plasmo": "1", ...(opts.headers || {}) };
+  let body = opts.body;
+  if (body && !(body instanceof FormData) && typeof body !== "string") {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(body);
+  }
+  const res = await fetch(path, { ...opts, headers, body });
+  if (!res.ok) {
+    let msg = `Error ${res.status}`;
+    try { msg = (await res.json()).detail || msg; } catch {}
+    throw new Error(msg);
+  }
+  const type = res.headers.get("content-type") || "";
+  return type.includes("json") ? res.json() : res;
+}
+
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.textContent = msg;
+  $("#toast").appendChild(el);
+  setTimeout(() => el.remove(), kind === "err" ? 7000 : 3500);
+}
+
+const fileUrl = (pid, name, download = false) =>
+  `/api/proyectos/${encodeURIComponent(pid)}/archivo/${name.split("/").map(encodeURIComponent).join("/")}${download ? "?descargar=true" : `?t=${Date.now()}`}`;
+
+// ------------------------------------------------------------ trabajos
+function watchJob(job, { fixed = false } = {}) {
+  return new Promise((resolve, reject) => {
+    state.job = job;
+    const box = $("#progress");
+    box.classList.toggle("fixed", fixed);
+    if (fixed) { box.style.position = "fixed"; box.style.zIndex = 40; document.body.appendChild(box); }
+    else if (box.parentElement !== $(".viewer-card")) { box.style.position = ""; box.style.zIndex = ""; $(".viewer-card").appendChild(box); }
+    box.classList.remove("hidden");
+    const render = (j) => {
+      const pct = j.porcentaje ?? 0;
+      $("#pg-pct").textContent = `${Math.round(pct)} %`;
+      $("#pg-bar").style.width = `${pct}%`;
+      $("#pg-msg").textContent = j.mensaje || "";
+      $("#pg-eta").textContent = j.eta_s ? `≈ ${fmtTime(j.eta_s)} restantes` : "";
+      $("#pg-phases").innerHTML = j.fases.map((f) => `<li class="${f.estado}"><i>${f.estado === "lista" ? "✓" : ""}</i>${esc(f.nombre)}${
+        f.estado === "activa" && f.progreso > 0 && f.progreso < 1 ? `<span class="pp">${Math.round(f.progreso * 100)} %</span>` : ""}</li>`).join("");
+    };
+    render(job);
+    const timer = setInterval(async () => {
+      try {
+        const j = await api(`/api/trabajos/${job.id}`);
+        render(j);
+        if (["listo", "error", "cancelado"].includes(j.estado)) {
+          clearInterval(timer);
+          setTimeout(() => box.classList.add("hidden"), j.estado === "listo" ? 350 : 0);
+          state.job = null;
+          if (j.estado === "listo") resolve(j.resultado || {});
+          else reject(new Error(j.estado === "cancelado" ? "Cancelado" : j.error || "Falló"));
+        }
+      } catch (e) {
+        clearInterval(timer);
+        box.classList.add("hidden");
+        reject(e);
+      }
+    }, 400);
+  });
+}
+
+function fmtTime(s) {
+  s = Math.round(s);
+  if (s < 60) return `${s} s`;
+  return `${Math.floor(s / 60)} min ${s % 60 ? (s % 60) + " s" : ""}`;
+}
+
+// ------------------------------------------------------------- estado
+async function refreshStatus() {
+  try {
+    const st = await api("/api/estado");
+    state.status = st;
+    const o = st.ollama;
+    const pillO = $("#pill-ollama");
+    const okModel = o.ok && o.modelo_listo;
+    pillO.querySelector(".dot").className = `dot ${okModel ? "ok" : o.ok ? "warn" : "err"}`;
+    pillO.querySelector(".txt").textContent = !o.ok ? "Ollama apagado" : okModel ? `Ollama · ${o.modelo_activo}` : `Falta ${o.modelo_activo}`;
+    pillO.title = !o.ok ? `No responde en ${o.url}` : okModel ? `Ollama ${o.version}` : "Descárgalo en Ajustes";
+    const g = st.generador;
+    const pillG = $("#pill-gen");
+    pillG.querySelector(".dot").className = `dot ${g.ok ? "ok" : "err"}`;
+    pillG.querySelector(".txt").textContent = g.ok ? `${g.nombre} · ${g.gpu ? g.gpu.replace(/^cuda:\d+\s*/, "").replace("NVIDIA GeForce ", "") : "listo"}` : `${g.nombre} sin conexión`;
+    pillG.title = g.mensaje || "";
+  } catch {}
+}
+
+// ----------------------------------------------------------- proyectos
+async function loadProjects() {
+  const { proyectos } = await api("/api/proyectos");
+  const list = $("#project-list");
+  if (!proyectos.length) {
+    list.innerHTML = `<div class="empty-list">Aún no hay proyectos.</div>`;
+    return;
+  }
+  list.innerHTML = proyectos.map((p) => `
+    <div class="project ${state.project?.id === p.id ? "active" : ""}" data-id="${esc(p.id)}">
+      <img src="${fileUrl(p.id, p.miniatura)}" alt="" loading="lazy">
+      <div style="min-width:0"><div class="p-name">${esc(p.nombre || p.id)}</div>
+      <div class="p-meta">${p.forma ? esc(formName(p.forma)) : "Sin pieza"} · ${new Date((p.creado || 0) * 1000).toLocaleDateString("es-DO", { day: "numeric", month: "short" })}</div></div>
+    </div>`).join("");
+  $$(".project", list).forEach((el) => el.addEventListener("click", () => openProject(el.dataset.id)));
+}
+
+const formName = (key) => state.forms.find((f) => f.clave === key)?.nombre || key;
+
+async function createProject(file) {
+  if (!file || !file.type.startsWith("image/")) return toast("Eso no parece una imagen.", "err");
+  const fd = new FormData();
+  fd.append("imagen", file, file.name || "pegada.png");
+  fd.append("recorte", state.config?.bg_model || "");
+  showWorkspace();
+  $("#img-preview").removeAttribute("src");
+  $("#analysis-body").innerHTML = `<span class="spinner"></span> Recortando el sujeto…`;
+  try {
+    const meta = await api("/api/proyectos", { method: "POST", body: fd });
+    if (meta.aviso_recorte) toast(meta.aviso_recorte);
+    await loadProjects();
+    await openProject(meta.id);
+    if (state.status?.ollama?.modelo_listo) analyze();
+  } catch (e) {
+    toast(e.message, "err");
+    showWelcome();
+  }
+}
+
+function showWorkspace() {
+  $("#welcome").classList.add("hidden");
+  $("#workspace").classList.remove("hidden");
+  if (!viewer) {
+    viewer = new Viewer($("#viewer"));
+    const p = state.config?.printer;
+    if (p) viewer.setBed(p.bed_x, p.bed_y);
+  }
+}
+
+function showWelcome() {
+  state.project = null;
+  history.replaceState(null, "", location.pathname);
+  $("#workspace").classList.add("hidden");
+  $("#welcome").classList.remove("hidden");
+  $$(".project").forEach((el) => el.classList.remove("active"));
+}
+
+async function openProject(pid) {
+  const meta = await api(`/api/proyectos/${encodeURIComponent(pid)}`);
+  state.project = meta;
+  history.replaceState(null, "", `#p=${encodeURIComponent(pid)}`);
+  showWorkspace();
+  $$(".project").forEach((el) => el.classList.toggle("active", el.dataset.id === pid));
+  renderImage();
+  if (meta.recorte?.modelo) $("#cut-model").value = meta.recorte.modelo;
+  renderAnalysis(meta.analisis);
+  const versions = meta.versiones || [];
+  const last = versions[versions.length - 1];
+  selectForm(last?.forma || meta.analisis?.forma_recomendada || state.form || "relieve", last);
+  renderVersions();
+  if (last) showVersion(last);
+  else {
+    viewer.clear();
+    $("#viewer-empty").classList.remove("hidden");
+    $("#card-report").classList.add("hidden");
+    $("#viewer-info").textContent = "";
+  }
+}
+
+function renderImage() {
+  const p = state.project;
+  if (!p) return;
+  const name = state.imgView === "recorte" && p.recorte ? "recorte.png" : "original.png";
+  $("#img-preview").src = fileUrl(p.id, name);
+  $$("#img-tabs button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.imgView));
+}
+
+// ------------------------------------------------------------- análisis
+const PROBLEMS = {
+  varios_objetos: "Varios objetos", fondo_recargado: "Fondo recargado", angulo_malo: "Ángulo difícil", desenfocada: "Desenfocada",
+  poca_luz: "Poca luz", objeto_cortado: "Objeto cortado", transparente_o_reflectante: "Transparente o brillante",
+};
+
+function renderAnalysis(a) {
+  const body = $("#analysis-body");
+  if (!a) {
+    body.className = "muted small";
+    body.innerHTML = "Pídele a Ollama que mire la foto: te dirá qué forma conviene, el tamaño y consejos de impresión.";
+    return;
+  }
+  body.className = "";
+  body.innerHTML = `
+    <p>${esc(a.descripcion)}</p>
+    <div class="chips">
+      <span class="chip accent">Sugerida: ${esc(formName(a.forma_recomendada))}</span>
+      <span class="chip">${Math.round(a.tamano_mm)} mm</span>
+      <span class="chip">Soportes: ${esc(a.soportes)}</span>
+      <span class="chip">${esc(a.material)}</span>
+      ${a.problemas.map((p) => `<span class="chip warn">${esc(PROBLEMS[p] || p)}</span>`).join("")}
+    </div>
+    ${a.por_que ? `<p class="muted small">${esc(a.por_que)}</p>` : ""}
+    ${a.consejos.length ? `<ul class="tips">${a.consejos.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}`;
+  renderForms();
+}
+
+async function analyze() {
+  if (!state.project) return;
+  const btn = $("#btn-analyze");
+  btn.disabled = true;
+  $("#analysis-body").innerHTML = `<span class="spinner"></span> Ollama está mirando la foto…`;
+  try {
+    const job = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}/analizar`, { method: "POST" });
+    const res = await pollQuiet(job.id);
+    state.project.analisis = res.analisis;
+    renderAnalysis(res.analisis);
+    if (!(state.project.versiones || []).length) {
+      selectForm(res.analisis.forma_recomendada);
+      applyRecommendedSize(res.analisis);
+    }
+  } catch (e) {
+    renderAnalysis(state.project.analisis);
+    $("#analysis-body").insertAdjacentHTML("afterbegin", `<p class="small" style="color:var(--err)">${esc(e.message)}</p>`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function pollQuiet(jid) {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 600));
+    const j = await api(`/api/trabajos/${jid}`);
+    if (j.estado === "listo") return j.resultado;
+    if (j.estado === "error" || j.estado === "cancelado") throw new Error(j.error || j.estado);
+  }
+}
+
+function applyRecommendedSize(a) {
+  const v = state.values[state.form];
+  if (!v || !a?.tamano_mm) return;
+  if ("tamano_mm" in v.parametros) v.parametros.tamano_mm = Math.round(a.tamano_mm);
+  if ("tamano_mm" in v.impresion) v.impresion.tamano_mm = Math.round(a.tamano_mm);
+  renderFields();
+}
+
+// --------------------------------------------------------------- formas
+function defaults(list) {
+  return Object.fromEntries((list || []).map((f) => [f.clave, f.defecto]));
+}
+
+function selectForm(key, version) {
+  const form = state.forms.find((f) => f.clave === key) || state.forms[1];
+  state.form = form.clave;
+  if (!state.values[form.clave]) state.values[form.clave] = { parametros: defaults(form.parametros), impresion: defaults(form.impresion) };
+  if (version && version.forma === form.clave) {
+    Object.assign(state.values[form.clave].parametros, version.parametros || {});
+    Object.assign(state.values[form.clave].impresion, version.impresion || {});
+  }
+  renderForms();
+  renderFields();
+}
+
+function renderForms() {
+  const rec = state.project?.analisis?.forma_recomendada;
+  $("#forms").innerHTML = state.forms.map((f) => `
+    <button class="form-card ${f.clave === state.form ? "on" : ""}" data-k="${f.clave}">
+      ${icon(f.clave)}<b>${esc(f.nombre)}</b>${f.clave === rec ? `<span class="badge">sugerida</span>` : ""}
+    </button>`).join("");
+  $$("#forms .form-card").forEach((b) => b.addEventListener("click", () => selectForm(b.dataset.k)));
+  const form = state.forms.find((f) => f.clave === state.form);
+  $("#form-desc").textContent = form?.descripcion || "";
+  const needsGen = form?.requiere === "generador";
+  const genOk = state.status?.generador?.ok;
+  $("#btn-generate").title = needsGen && !genOk ? state.status?.generador?.mensaje || "" : "";
+}
+
+function fieldHtml(f, value, group) {
+  const id = `f-${group}-${f.clave}`;
+  if (f.tipo === "si_no") {
+    return `<label class="switch field" title="${esc(f.ayuda || "")}"><input type="checkbox" id="${id}" data-g="${group}" data-k="${f.clave}" ${value ? "checked" : ""}>${esc(f.nombre)}</label>`;
+  }
+  if (f.tipo === "opcion") {
+    return `<div class="field"><label for="${id}" title="${esc(f.ayuda || "")}">${esc(f.nombre)}</label>
+      <select id="${id}" data-g="${group}" data-k="${f.clave}">${f.opciones.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>`;
+  }
+  return `<div class="field"><label for="${id}" title="${esc(f.ayuda || "")}">${esc(f.nombre)} ${f.unidad ? `<span class="unit">(${esc(f.unidad)})</span>` : ""}</label>
+    <input type="number" id="${id}" data-g="${group}" data-k="${f.clave}" value="${value}" min="${f.min}" max="${f.max}" step="${f.paso}" title="${esc(f.ayuda || "")}"></div>`;
+}
+
+function renderFields() {
+  const form = state.forms.find((f) => f.clave === state.form);
+  const v = state.values[state.form];
+  $("#fields").innerHTML = form.parametros.map((f) => fieldHtml(f, v.parametros[f.clave], "parametros")).join("");
+  $("#print-fields").innerHTML = form.impresion.map((f) => fieldHtml(f, v.impresion[f.clave], "impresion")).join("");
+  $$("#fields [data-k], #print-fields [data-k]").forEach((el) => el.addEventListener("change", () => {
+    const def = [...form.parametros, ...form.impresion].find((f) => f.clave === el.dataset.k);
+    let val = el.type === "checkbox" ? el.checked : el.value;
+    if (def?.tipo === "numero") val = Math.min(def.max, Math.max(def.min, Number(val)));
+    else if (def?.tipo === "opcion" && typeof def.defecto === "number") val = Number(val);
+    state.values[state.form][el.dataset.g][el.dataset.k] = val;
+    if (el.type === "number") el.value = val;
+  }));
+}
+
+async function generate() {
+  if (!state.project) return;
+  const form = state.forms.find((f) => f.clave === state.form);
+  if (form.requiere === "generador" && !state.status?.generador?.ok) {
+    await refreshStatus();
+    if (!state.status?.generador?.ok) return toast(state.status?.generador?.mensaje || "El generador 3D no está disponible.", "err");
+  }
+  const v = state.values[state.form];
+  const btn = $("#btn-generate");
+  btn.disabled = true;
+  try {
+    const job = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}/generar`, { method: "POST", body: { forma: state.form, ...v } });
+    const res = await watchJob(job);
+    state.project = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}`);
+    renderVersions();
+    showVersion(res);
+    loadProjects();
+    toast(`${res.forma_nombre} lista`, "ok");
+  } catch (e) {
+    if (e.message !== "Cancelado") toast(e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ------------------------------------------------------- versiones/reporte
+function renderVersions() {
+  const versions = state.project?.versiones || [];
+  $("#versions").innerHTML = versions.map((v) => `<button class="${state.version?.version === v.version ? "on" : ""}" data-v="${esc(v.version)}" title="${esc(v.forma_nombre)}">${esc(v.version.split("-")[0])} · ${esc(v.forma_nombre)}</button>`).join("");
+  $$("#versions button").forEach((b) => b.addEventListener("click", () => {
+    const v = versions.find((x) => x.version === b.dataset.v);
+    if (v) { showVersion(v); selectForm(v.forma, v); }
+  }));
+}
+
+async function showVersion(v) {
+  state.version = v;
+  renderVersions();
+  $("#viewer-empty").classList.add("hidden");
+  try {
+    const size = await viewer.load(fileUrl(state.project.id, `${v.version}/${v.archivos.glb}`));
+    $("#viewer-info").textContent = `${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm · ${v.reporte.metricas.caras.toLocaleString("es-DO")} caras`;
+  } catch (e) {
+    toast(`No pude mostrar el modelo: ${e.message}`, "err");
+  }
+  renderReport(v);
+}
+
+function renderReport(v) {
+  const r = v.reporte;
+  const m = r.metricas;
+  const card = $("#card-report");
+  card.classList.remove("hidden");
+  const label = { sana: "Lista para imprimir", aviso: "Imprimible con avisos", error: "Necesita arreglo" }[r.estado] || r.estado;
+  const pid = state.project.id;
+  const f = v.archivos;
+  const dl = (key, text) => f[key] ? `<a href="${fileUrl(pid, `${v.version}/${f[key]}`, true)}" download><button class="sm" data-icon="download">${text}</button></a>` : "";
+  card.innerHTML = `
+    <div class="report-head">
+      <h2 style="margin:0">Imprimibilidad</h2>
+      <span class="status-badge ${r.estado}">${esc(label)}</span>
+      <span class="muted small">${esc(v.forma_nombre)} · ${r.dimensiones_mm.join(" × ")} mm</span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><span>Cerrada</span><b class="${m.cerrada ? "ok" : "bad"}">${m.cerrada ? "Sí" : "No"}</b></div>
+      <div class="metric"><span>Aristas no manifold</span><b class="${m.aristas_no_manifold ? "bad" : "ok"}">${m.aristas_no_manifold}</b></div>
+      <div class="metric"><span>Agujeros</span><b class="${m.agujeros ? "bad" : "ok"}">${m.agujeros}</b></div>
+      <div class="metric"><span>Volumen</span><b>${m.volumen_cm3} cm³</b></div>
+      <div class="metric"><span>Peso (${esc(r.material)})</span><b>≈ ${r.peso_g} g</b></div>
+      <div class="metric"><span>Voladizos</span><b>${Math.round(r.voladizos * 100)} %</b></div>
+      <div class="metric"><span>Paredes &lt; ${r.pared_minima_mm} mm</span><b>${r.paredes_finas == null ? "—" : Math.round(r.paredes_finas * 100) + " %"}</b></div>
+      <div class="metric"><span>Estable</span><b class="${r.estabilidad.estable ? "ok" : "bad"}">${r.estabilidad.estable ? "Sí" : "No"}</b></div>
+      <div class="metric"><span>Cabe en la cama</span><b class="${r.cabe_en_cama ? "ok" : "bad"}">${r.cabe_en_cama ? "Sí" : "No"}</b></div>
+      <div class="metric"><span>Piezas</span><b>${v.piezas.length}</b></div>
+    </div>
+    <ul class="issues">
+      ${r.errores.map((t) => `<li class="error">${esc(t)}</li>`).join("")}
+      ${r.avisos.map((t) => `<li class="aviso">${esc(t)}</li>`).join("")}
+      ${(v.notas || []).map((t) => `<li class="nota">${esc(t)}</li>`).join("")}
+      ${r.nota_paredes ? `<li class="nota">${esc(r.nota_paredes)}</li>` : ""}
+    </ul>
+    <div class="exports">
+      ${dl("3mf", "3MF")}${dl("stl", "STL")}${dl("obj", "OBJ")}${dl("zip", "Piezas (ZIP)")}
+      <button class="sm" id="open-slicer" data-icon="slicer">Abrir en el slicer</button>
+      <button class="sm" id="open-folder" data-icon="folder">Abrir carpeta</button>
+    </div>`;
+  hydrateIcons(card);
+  $("#open-folder").onclick = () => api(`/api/proyectos/${encodeURIComponent(pid)}/abrir`, { method: "POST", body: { version: v.version } })
+    .catch((e) => toast(e.message, "err"));
+  $("#open-slicer").onclick = () => api(`/api/proyectos/${encodeURIComponent(pid)}/abrir`, { method: "POST", body: { archivo: `${v.version}/${f["3mf"]}` } })
+    .then(() => toast("Abriendo el 3MF con tu slicer…")).catch((e) => toast(e.message, "err"));
+}
+
+// ----------------------------------------------------------------- chat
+function addMsg(role, text) {
+  const el = document.createElement("div");
+  el.className = `msg ${role}`;
+  el.textContent = text;
+  $("#chat-log").appendChild(el);
+  $("#chat-log").scrollTop = 1e9;
+  return el;
+}
+
+async function sendChat(text) {
+  text = text.trim();
+  if (!text) return;
+  $("#chat-input").value = "";
+  addMsg("user", text);
+  state.chat.push({ role: "user", content: text });
+  const out = addMsg("assistant", "…");
+  try {
+    const res = await api("/api/chat", { method: "POST", body: { mensajes: state.chat, proyecto: state.project?.id } });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let acc = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      acc += dec.decode(value, { stream: true });
+      out.textContent = acc;
+      $("#chat-log").scrollTop = 1e9;
+    }
+    state.chat.push({ role: "assistant", content: acc });
+  } catch (e) {
+    out.textContent = `⚠️ ${e.message}`;
+  }
+}
+
+// -------------------------------------------------------------- ajustes
+async function openSettings() {
+  const [cfg, st] = await Promise.all([api("/api/config"), api("/api/estado")]);
+  state.config = cfg;
+  state.status = st;
+  const o = st.ollama;
+  const g = st.generador;
+  const vision = o.vision || [];
+  const modelOpts = [...new Set([...vision, cfg.vision_model])].map((m) => `<option ${m === cfg.vision_model ? "selected" : ""}>${esc(m)}</option>`).join("");
+  const installed = new Set((o.modelos || []).map((m) => m.name));
+  const ckpts = g.checkpoints || [];
+  const ckptOptions = (sel) => [...new Set([sel, ...ckpts].filter(Boolean))].map((c) => `<option ${c === sel ? "selected" : ""}>${esc(c)}</option>`).join("");
+  const p = cfg.printer;
+  $("#settings-body").innerHTML = `
+    <section>
+      <h3>Ollama · visión y chat</h3>
+      <div class="grid2">
+        <div class="field"><label>Dirección</label><input type="url" id="s-ollama" value="${esc(cfg.ollama_url)}"></div>
+        <div class="field"><label>Modelo de visión</label><select id="s-vision">${modelOpts}</select></div>
+      </div>
+      <div class="hint">${o.ok ? `Ollama ${esc(o.version)} conectado.` : `No responde en ${esc(o.url)}. Instálalo desde ollama.com y ábrelo.`}</div>
+      ${o.recomendados.map((r) => `
+        <div class="model-row"><div class="grow"><b>${esc(r.tag)}</b> <span class="muted small">· ${r.size_gb} GB · ${esc(r.label)}</span></div>
+        ${installed.has(r.tag) ? `<span class="chip">Descargado</span>` : `<button class="sm" data-pull="${esc(r.tag)}" ${o.ok ? "" : "disabled"} data-icon="download">Descargar</button>`}</div>`).join("")}
+    </section>
+    <section>
+      <h3>Generador 3D</h3>
+      <div class="grid2">
+        <div class="field"><label>Motor</label><select id="s-gen">
+          <option value="comfyui" ${cfg.generator === "comfyui" ? "selected" : ""}>ComfyUI + Hunyuan3D (recomendado)</option>
+          <option value="hunyuan_api" ${cfg.generator === "hunyuan_api" ? "selected" : ""}>Servidor Hunyuan3D-2 (api_server)</option></select></div>
+        <div class="field"><label>Dirección de ComfyUI</label><input type="url" id="s-comfy" value="${esc(cfg.comfy_url)}"></div>
+        <div class="field"><label>Checkpoint 3D</label><select id="s-ckpt">${ckptOptions(cfg.comfy_checkpoint)}</select></div>
+        <div class="field"><label>Checkpoint texto→imagen (opcional)</label><select id="s-t2i"><option value="">— ninguno —</option>${ckptOptions(cfg.comfy_t2i_checkpoint).replace(/<option selected><\/option>/, "")}</select></div>
+        <div class="field"><label>Dirección del servidor Hunyuan3D</label><input type="url" id="s-hy" value="${esc(cfg.hunyuan_api_url)}"></div>
+      </div>
+      <div class="hint">${esc(g.mensaje || "")}${g.gpu ? ` · ${esc(g.gpu)} · ${g.vram_gb} GB VRAM` : ""}</div>
+      ${(g.catalogo || []).map((c) => `<div class="model-row"><div class="grow"><b>${esc(c.nombre)}</b><div class="muted small">${esc(c.archivo)} · ${c.gb} GB → <code>ComfyUI/models/checkpoints</code></div></div>
+        ${ckpts.includes(c.archivo) ? `<span class="chip">Instalado</span>` : `<a href="${esc(c.url)}" target="_blank" rel="noopener"><button class="sm" data-icon="download">Enlace</button></a>`}</div>`).join("")}
+    </section>
+    <section>
+      <h3>Recorte y profundidad (corren en CPU)</h3>
+      <div class="grid2">
+        <div class="field"><label>Quitar fondo con</label><select id="s-bg">
+          ${[["isnet-general-use", "IS-Net (recomendado)"], ["birefnet-lite", "BiRefNet lite"], ["u2netp", "U2-Net P (rápido)"], ["simple", "Por color (sin modelo)"]]
+            .map(([k, l]) => `<option value="${k}" ${cfg.bg_model === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        <div class="field"><label>Profundidad para relieves</label><select id="s-depth">
+          <option value="depth-anything-v2-small" ${cfg.depth_model === "depth-anything-v2-small" ? "selected" : ""}>Depth Anything V2 Small</option>
+          <option value="luminancia" ${cfg.depth_model === "luminancia" ? "selected" : ""}>Luz y sombra (sin modelo)</option></select></div>
+      </div>
+      ${st.onnx.map((m) => `<div class="model-row"><div class="grow"><b>${esc(m.nombre)}</b> <span class="muted small">· ${m.mb} MB · ${esc(m.tipo)}</span></div>
+        ${m.descargado ? `<span class="chip">Descargado</span>` : `<button class="sm" data-onnx="${esc(m.clave)}" data-icon="download">Descargar</button>`}</div>`).join("")}
+      <div class="hint">Si falta un modelo, se descarga solo la primera vez que se usa.</div>
+    </section>
+    <section>
+      <h3>Impresora</h3>
+      <div class="grid4">
+        <div class="field"><label>Cama X (mm)</label><input type="number" id="s-bx" value="${p.bed_x}"></div>
+        <div class="field"><label>Cama Y (mm)</label><input type="number" id="s-by" value="${p.bed_y}"></div>
+        <div class="field"><label>Alto Z (mm)</label><input type="number" id="s-bz" value="${p.bed_z}"></div>
+        <div class="field"><label>Boquilla (mm)</label><input type="number" id="s-noz" value="${p.nozzle}" step="0.1"></div>
+        <div class="field"><label>Tecnología</label><select id="s-kind"><option value="fdm" ${p.kind === "fdm" ? "selected" : ""}>FDM (filamento)</option><option value="sla" ${p.kind === "sla" ? "selected" : ""}>Resina</option></select></div>
+        <div class="field"><label>Material</label><select id="s-mat">${["PLA", "PETG", "ABS", "ASA", "TPU", "Resina"].map((m) => `<option ${p.material === m ? "selected" : ""}>${m}</option>`).join("")}</select></div>
+      </div>
+    </section>
+    <section>
+      <h3>Carpeta de proyectos</h3>
+      <input type="text" id="s-out" value="${esc(cfg.output_dir)}">
+    </section>`;
+  hydrateIcons($("#settings-body"));
+  $$("[data-pull]").forEach((b) => b.addEventListener("click", () => downloadJob(b, "/api/ollama/descargar", { modelo: b.dataset.pull })));
+  $$("[data-onnx]").forEach((b) => b.addEventListener("click", () => downloadJob(b, "/api/onnx/descargar", { clave: b.dataset.onnx })));
+  $("#settings").showModal();
+}
+
+async function downloadJob(btn, url, body) {
+  btn.disabled = true;
+  const row = btn.closest(".model-row");
+  const bar = document.createElement("div");
+  bar.className = "bar mini-bar";
+  bar.innerHTML = "<i></i>";
+  btn.replaceWith(bar);
+  try {
+    const job = await api(url, { method: "POST", body });
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 500));
+      const j = await api(`/api/trabajos/${job.id}`);
+      bar.firstChild.style.width = `${j.porcentaje}%`;
+      bar.title = j.mensaje;
+      if (j.estado === "listo") { bar.replaceWith(Object.assign(document.createElement("span"), { className: "chip", textContent: "Descargado" })); break; }
+      if (j.estado === "error") throw new Error(j.error);
+    }
+    refreshStatus();
+  } catch (e) {
+    toast(e.message, "err");
+    row.querySelector(".mini-bar")?.remove();
+  }
+}
+
+async function saveSettings() {
+  const num = (id) => Number($(id).value);
+  const data = {
+    ollama_url: $("#s-ollama").value.trim(),
+    vision_model: $("#s-vision").value,
+    generator: $("#s-gen").value,
+    comfy_url: $("#s-comfy").value.trim(),
+    comfy_checkpoint: $("#s-ckpt").value,
+    comfy_t2i_checkpoint: $("#s-t2i").value,
+    hunyuan_api_url: $("#s-hy").value.trim(),
+    bg_model: $("#s-bg").value,
+    depth_model: $("#s-depth").value,
+    output_dir: $("#s-out").value.trim(),
+    printer: { bed_x: num("#s-bx"), bed_y: num("#s-by"), bed_z: num("#s-bz"), nozzle: num("#s-noz"), kind: $("#s-kind").value, material: $("#s-mat").value },
+  };
+  state.config = await api("/api/config", { method: "PUT", body: data });
+  $("#settings").close();
+  viewer?.setBed(data.printer.bed_x, data.printer.bed_y);
+  toast("Ajustes guardados", "ok");
+  refreshStatus();
+  loadProjects();
+}
+
+// --------------------------------------------------------------- inicio
+function renderFeatures() {
+  $("#features").innerHTML = state.forms.map((f) => `<div class="feature"><b>${icon(f.clave)}${esc(f.nombre)}</b><span>${esc(f.descripcion)}</span></div>`).join("");
+}
+
+async function fromIdea() {
+  const idea = $("#idea").value.trim();
+  if (!idea) return toast("Escribe una idea primero.");
+  try {
+    const job = await api("/api/texto-a-imagen", { method: "POST", body: { idea } });
+    const res = await watchJob(job, { fixed: true });
+    await loadProjects();
+    await openProject(res.proyecto);
+    analyze();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+function bind() {
+  const drop = $("#drop");
+  $("#file").addEventListener("change", (e) => createProject(e.target.files[0]));
+  ["dragenter", "dragover"].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); if (ev === "dragleave" && e.relatedTarget) return; drop.classList.remove("over"); }));
+  document.addEventListener("drop", (e) => { const f = e.dataTransfer?.files?.[0]; if (f) createProject(f); });
+  document.addEventListener("paste", (e) => {
+    if (e.target.closest("input, textarea")) return;
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
+    if (item) createProject(item.getAsFile());
+  });
+  $("#btn-new").addEventListener("click", showWelcome);
+  $("#btn-idea").addEventListener("click", fromIdea);
+  $("#idea").addEventListener("keydown", (e) => { if (e.key === "Enter") fromIdea(); });
+  $$("#img-tabs button").forEach((b) => b.addEventListener("click", () => { state.imgView = b.dataset.v; renderImage(); }));
+  $("#btn-recut").addEventListener("click", async () => {
+    if (!state.project) return;
+    const btn = $("#btn-recut");
+    btn.disabled = true;
+    try {
+      await api(`/api/proyectos/${encodeURIComponent(state.project.id)}/recorte`, { method: "POST", body: { modelo: $("#cut-model").value } });
+      state.project = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}`);
+      state.imgView = "recorte";
+      renderImage();
+      loadProjects();
+    } catch (e) { toast(e.message, "err"); } finally { btn.disabled = false; }
+  });
+  $("#btn-analyze").addEventListener("click", analyze);
+  $("#btn-generate").addEventListener("click", generate);
+  $("#pg-cancel").addEventListener("click", () => state.job && api(`/api/trabajos/${state.job.id}/cancelar`, { method: "POST" }));
+  $("#v-wire").addEventListener("click", (e) => e.currentTarget.classList.toggle("on", viewer?.toggleWire()));
+  $("#v-bed").addEventListener("click", (e) => e.currentTarget.classList.toggle("on", viewer?.toggleBed()));
+  $("#v-reset").addEventListener("click", () => viewer?.frame());
+  $("#btn-chat").addEventListener("click", () => $("#chat").classList.toggle("hidden"));
+  $("#chat-close").addEventListener("click", () => $("#chat").classList.add("hidden"));
+  $("#chat-clear").addEventListener("click", () => { state.chat = []; $("#chat-log").innerHTML = ""; addMsg("assistant", "Listo, empezamos de nuevo."); });
+  $("#chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendChat($("#chat-input").value); });
+  $("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat($("#chat-input").value); } });
+  $$("#chat-suggest button").forEach((b) => b.addEventListener("click", () => sendChat(b.textContent)));
+  $("#btn-settings").addEventListener("click", () => openSettings().catch((e) => toast(e.message, "err")));
+  $("#pill-ollama").addEventListener("click", () => openSettings());
+  $("#pill-gen").addEventListener("click", () => openSettings());
+  $("#set-close").addEventListener("click", () => $("#settings").close());
+  $("#set-cancel").addEventListener("click", () => $("#settings").close());
+  $("#set-save").addEventListener("click", () => saveSettings().catch((e) => toast(e.message, "err")));
+}
+
+async function init() {
+  hydrateIcons();
+  bind();
+  const [cfg, forms] = await Promise.all([api("/api/config"), api("/api/formas")]);
+  state.config = cfg;
+  state.forms = forms.formas;
+  renderFeatures();
+  await loadProjects();
+  await refreshStatus();
+  setInterval(refreshStatus, 15000);
+  const linked = new URLSearchParams(location.hash.slice(1)).get("p");
+  if (linked) openProject(linked).catch(() => showWelcome());
+}
+
+init().catch((e) => toast(e.message, "err"));

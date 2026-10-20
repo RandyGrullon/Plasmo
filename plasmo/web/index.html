@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plasmo</title>
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three.module.min.js", "three/addons/": "/vendor/addons/" } }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="/logo.svg" alt=""><span>Plasmo</span></div>
+    <div class="status">
+      <span class="pill" id="pill-ollama" title="Ollama"><span class="dot"></span><span class="txt">Ollama…</span></span>
+      <span class="pill" id="pill-gen" title="Generador 3D"><span class="dot"></span><span class="txt">Generador 3D…</span></span>
+    </div>
+    <div class="actions">
+      <button class="ghost" id="btn-chat" data-icon="chat">Asistente</button>
+      <button class="ghost" id="btn-settings" data-icon="gear">Ajustes</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <button class="primary block" id="btn-new" data-icon="plus">Nuevo proyecto</button>
+      <h3>Proyectos</h3>
+      <div id="project-list"></div>
+    </aside>
+
+    <main id="main">
+      <!-- Bienvenida -->
+      <section id="welcome" class="welcome">
+        <h1>De una foto a tu <span>impresora 3D</span></h1>
+        <p>Sube una imagen y Plasmo la convierte en una pieza lista para el slicer. Todo corre en tu PC.</p>
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/bmp" hidden>
+          <span data-icon="upload"></span>
+          <h2>Arrastra una foto o haz clic</h2>
+          <p>PNG, JPG o WebP. También puedes pegar una imagen con Ctrl+V.</p>
+        </label>
+        <div class="or">o describe tu idea</div>
+        <div class="idea">
+          <input type="text" id="idea" placeholder="Ej.: un dragoncito bebé sentado, estilo juguete">
+          <button id="btn-idea" data-icon="spark">Crear imagen</button>
+        </div>
+        <div class="features" id="features"></div>
+      </section>
+
+      <!-- Espacio de trabajo -->
+      <section id="workspace" class="workspace hidden">
+        <div class="col-left">
+          <div class="card">
+            <h2>Imagen <span class="spacer"></span>
+              <span class="tabs" id="img-tabs"><button data-v="recorte" class="on">Recorte</button><button data-v="original">Original</button></span>
+            </h2>
+            <div class="image-box"><img id="img-preview" alt=""></div>
+            <div class="row" style="margin-top:10px">
+              <select id="cut-model" class="grow" title="Cómo separar el sujeto del fondo">
+                <option value="isnet-general-use">Quitar fondo: IS-Net</option>
+                <option value="birefnet-lite">Quitar fondo: BiRefNet</option>
+                <option value="u2netp">Quitar fondo: rápido</option>
+                <option value="simple">Quitar fondo: por color</option>
+                <option value="ninguno">Usar la imagen completa</option>
+              </select>
+              <button class="sm" id="btn-recut" data-icon="refresh">Recortar</button>
+            </div>
+          </div>
+
+          <div class="card analysis" id="card-analysis">
+            <h2>Lo que ve la IA <span class="spacer"></span><button class="sm" id="btn-analyze" data-icon="eye">Analizar</button></h2>
+            <div id="analysis-body" class="muted small">Pídele a Ollama que mire la foto: te dirá qué forma conviene, el tamaño y consejos de impresión.</div>
+          </div>
+
+          <div class="card" id="card-form">
+            <h2>Forma de impresión</h2>
+            <div class="forms" id="forms"></div>
+            <p class="form-desc" id="form-desc"></p>
+            <details class="params" id="params-box" open>
+              <summary>Parámetros</summary>
+              <div class="fields" id="fields"></div>
+            </details>
+            <details class="params" id="print-box">
+              <summary>Preparación para imprimir</summary>
+              <div class="fields" id="print-fields"></div>
+            </details>
+            <div class="generate"><button class="primary" id="btn-generate" data-icon="cube">Generar pieza</button></div>
+          </div>
+        </div>
+
+        <div class="col-right">
+          <div class="viewer-card">
+            <div id="viewer"></div>
+            <div class="versions" id="versions"></div>
+            <div class="viewer-toolbar">
+              <button class="sm" id="v-wire" title="Malla de alambre" data-icon="grid"></button>
+              <button class="sm on" id="v-bed" title="Cama de impresión" data-icon="bed"></button>
+              <button class="sm" id="v-reset" title="Encuadrar" data-icon="focus"></button>
+            </div>
+            <div class="viewer-info" id="viewer-info"></div>
+            <div class="viewer-empty" id="viewer-empty"><span data-icon="cube"></span><div>Elige una forma y presiona <b>Generar pieza</b>.</div></div>
+            <div class="progress hidden" id="progress">
+              <div class="progress-box">
+                <div class="progress-top"><b id="pg-pct">0 %</b><span id="pg-eta"></span></div>
+                <div class="bar"><i id="pg-bar"></i></div>
+                <div class="progress-msg" id="pg-msg"></div>
+                <ul class="phases" id="pg-phases"></ul>
+                <div class="progress-actions"><button class="sm" id="pg-cancel">Cancelar</button></div>
+              </div>
+            </div>
+          </div>
+          <div class="card hidden" id="card-report"></div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="chat hidden" id="chat">
+      <div class="chat-head"><b>Asistente de impresión</b><button class="ghost sm" id="chat-clear">Limpiar</button><button class="ghost sm" id="chat-close" data-icon="x"></button></div>
+      <div class="chat-log" id="chat-log">
+        <div class="msg assistant">¡Hola! Soy tu asistente local. Pregúntame de temperaturas, soportes, slicers o de la pieza que estás haciendo.</div>
+      </div>
+      <div class="chat-suggest" id="chat-suggest">
+        <button>¿Qué ajustes uso en mi slicer para esta pieza?</button>
+        <button>¿Necesita soportes?</button>
+        <button>¿Qué material me conviene?</button>
+      </div>
+      <form class="chat-form" id="chat-form">
+        <textarea id="chat-input" placeholder="Escribe tu pregunta…"></textarea>
+        <button class="primary" type="submit" data-icon="send"></button>
+      </form>
+    </aside>
+  </div>
+
+  <dialog id="settings">
+    <div class="dlg-head"><b>Ajustes</b><button class="ghost sm" id="set-close" data-icon="x"></button></div>
+    <div class="dlg-body" id="settings-body"></div>
+    <div class="dlg-foot"><button id="set-cancel">Cancelar</button><button class="primary" id="set-save">Guardar</button></div>
+  </dialog>
+
+  <div id="toast"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
