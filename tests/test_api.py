@@ -108,6 +108,21 @@ def test_pixel_3mf_has_parts(client):
     assert "zip" in out["archivos"]
 
 
+def test_config_with_bom_is_read(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_bytes(b"\xef\xbb\xbf" + b'{"vision_model": "gemma4:12b", "tutorial_visto": true}')  # como lo guarda el Bloc de notas
+    s = ConfigStore(path).settings
+    assert s.vision_model == "gemma4:12b" and s.tutorial_visto is True
+
+
+def test_example_project_and_tutorial_flag(client):
+    assert client.get("/api/config").json()["tutorial_visto"] is False
+    meta = client.post("/api/ejemplo", headers=H).json()
+    assert meta["ejemplo"] is True and meta["recorte"]["cobertura"] > 0.1
+    assert client.get(f"/api/proyectos/{meta['id']}/archivo/recorte.png").status_code == 200
+    assert client.put("/api/config", json={"tutorial_visto": True}, headers=H).json()["tutorial_visto"] is True
+
+
 def test_chat_streams(client):
     r = client.post("/api/chat", json={"mensajes": [{"role": "user", "content": "¿Temperatura para PLA?"}]}, headers=H)
     assert "PLA" in r.text

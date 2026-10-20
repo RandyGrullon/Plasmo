@@ -1,6 +1,7 @@
 import { Viewer } from "/viewer.js";
 import { icon, hydrateIcons } from "/icons.js";
-import { NoiseArt, PrinterArt, fmtClock, logoSVG, reducedMotion, splashReady, thinking, typingDots } from "/anim.js";
+import { NoiseArt, PrinterArt, celebrate, fmtClock, logoSVG, reducedMotion, splashReady, thinking, typingDots } from "/anim.js";
+import { Tour } from "/tour.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -388,11 +389,13 @@ async function generate() {
     const res = await watchJob(job);
     state.project = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}`);
     renderVersions();
-    showVersion(res);
+    await showVersion(res);
     loadProjects();
     toast(`${res.forma_nombre} lista`, "ok");
+    return true;
   } catch (e) {
     if (e.message !== "Cancelado") toast(e.message, "err");
+    return false;
   } finally {
     btn.disabled = false;
     btn.classList.remove("busy");
@@ -627,6 +630,148 @@ async function saveSettings() {
   loadProjects();
 }
 
+// ------------------------------------------------------------ tutorial
+async function createExample() {
+  showWorkspace();
+  $("#img-preview").src = "/ejemplo.png";
+  setCutting(true, "Preparando el ejemplo…");
+  renderAnalysis(null);
+  try {
+    const meta = await api("/api/ejemplo", { method: "POST" });
+    await loadProjects();
+    setCutting(false);
+    await openProject(meta.id, { reveal: true });
+  } catch (e) {
+    setCutting(false);
+    throw e;
+  }
+}
+
+function engineStatus() {
+  const st = state.status;
+  if (!st) return "";
+  const row = (ok, text) => `<span><span class="dot ${ok ? "ok" : "err"}"></span>${text}</span>`;
+  const o = st.ollama;
+  const g = st.generador;
+  return `<div class="tour-status">
+    ${row(o.ok && o.modelo_listo, o.ok ? (o.modelo_listo ? `Ollama listo con <b>${esc(o.modelo_activo)}</b>` : `Ollama abierto, falta <b>${esc(o.modelo_activo)}</b>`) : "Ollama no responde")}
+    ${row(g.ok, g.ok ? `${esc(g.nombre)} listo${g.gpu ? ` en ${esc(g.gpu.replace(/^cuda:\d+\s*/, ""))}` : ""}` : `${esc(g.nombre)} sin conexión`)}
+  </div>${!(o.ok && g.ok) ? `<p class="muted small" style="margin:8px 0 0">Sin ellos igual puedes hacer relieves, litofanías, llaveros, imanes, pixel art y cortadores.</p>` : ""}`;
+}
+
+function buildTourSteps() {
+  const ollamaReady = () => state.status?.ollama?.ok && state.status?.ollama?.modelo_listo;
+  return [
+    {
+      title: "Bienvenido a Plasmo",
+      wide: true,
+      extra: `<div class="tour-hero"><div class="tour-logo" id="tour-logo"></div></div>`,
+      text: `<p>Plasmo convierte una foto en una pieza lista para tu impresora 3D, todo en tu PC.</p>
+             <p>En unos dos minutos te muestro cómo, con un gatito de ejemplo. Usa <kbd>→</kbd> para avanzar y <kbd>Esc</kbd> para salir.</p>`,
+      after: async (card) => { const el = card.querySelector("#tour-logo"); if (el) el.innerHTML = await logoSVG("tour"); },
+    },
+    {
+      target: ".status", placement: "bottom", title: "Tus motores de IA",
+      text: `<p><b>Ollama</b> mira la foto y te aconseja. <b>ComfyUI</b> con Hunyuan3D genera la figura 3D.</p><p>Verde es listo; si uno está en rojo, haz clic en él.</p>`,
+      extra: engineStatus,
+      before: async () => { showWelcome(); await refreshStatus(); },
+    },
+    {
+      target: "#btn-settings", placement: "bottom", title: "Ajustes",
+      text: `<p>Aquí conectas los motores, descargas los modelos recomendados (como <b>qwen3.5:9b</b>) y pones las medidas de tu cama.</p>`,
+    },
+    {
+      target: "#drop", placement: "bottom", title: "Sube tu foto",
+      text: `<p>Arrástrala aquí, haz clic para elegirla o pégala con <kbd>Ctrl</kbd>+<kbd>V</kbd>.</p><p>Sale mejor con <b>un solo objeto</b>, entero, bien iluminado y con fondo simple.</p>`,
+      before: showWelcome,
+    },
+    {
+      target: ".idea", placement: "bottom", title: "O describe tu idea",
+      text: `<p>Escribe lo que quieres y Ollama prepara el prompt para que ComfyUI dibuje la imagen. Para esto hace falta un checkpoint SDXL en Ajustes.</p>`,
+    },
+    {
+      title: "Probemos con un ejemplo",
+      text: `<p>Voy a abrir un proyecto con un gatito de juguete. Todo lo que sigue lo haces igual con tus fotos.</p>`,
+      action: { label: "Usar el gatito de ejemplo", busy: "Recortando…", run: createExample },
+    },
+    {
+      target: () => $(".col-left .card"), placement: "right", title: "El recorte",
+      text: `<p>Plasmo separó al gatito del fondo con IS-Net, en tu CPU.</p><p>Si el recorte no quedó bien, cambia el método abajo y pulsa <b>Recortar</b>. Con <b>Original</b> ves la foto entera.</p>`,
+    },
+    {
+      target: "#card-analysis", placement: "right", title: "Lo que ve la IA",
+      text: () => ollamaReady()
+        ? `<p>Ollama describe la foto y sugiere la forma, el tamaño, los soportes y el material.</p>`
+        : `<p>Cuando Ollama esté conectado, aquí verás qué hay en la foto, la forma sugerida, el tamaño y consejos de impresión.</p>`,
+      action: { label: "Analizar ahora", busy: "Ollama está mirando…", run: async () => { if (!ollamaReady()) throw new Error("Ollama no está listo; conéctalo en Ajustes cuando quieras."); await analyze(); } },
+    },
+    {
+      target: "#forms", placement: "right", title: "Elige la forma",
+      text: `<ul class="tour-list"><li><b>Figura 3D</b> con IA (necesita ComfyUI)</li><li><b>Relieve</b> y <b>Litofanía</b> (plana, curva o lámpara)</li>
+             <li><b>Llavero</b> e <b>Imán</b> de nevera</li><li><b>Pixel art</b> multicolor y <b>Cortador</b> de galletas</li></ul>
+             <p style="margin-top:8px">La que sugiere la IA lleva la etiqueta <b>sugerida</b>.</p>`,
+      before: () => { $("#card-form").scrollIntoView({ block: "center" }); },
+    },
+    {
+      target: "#params-box", placement: "right", title: "Parámetros",
+      text: `<p>Elegí <b>Llavero</b> para el ejemplo. Cada forma tiene sus parámetros: tamaño, grosor, relieve, argolla…</p><p>Pasa el mouse por un nombre para ver su ayuda.</p>`,
+      before: () => { selectForm("llavero"); $("#params-box").open = true; },
+    },
+    {
+      target: "#print-box", placement: "right", title: "Preparación para imprimir",
+      text: `<p>Gira la pieza o divídela si no cabe en tu cama. En la <b>Figura 3D</b> también eliges el tamaño, una base y cuánto aplanar abajo.</p>`,
+      before: () => { $("#print-box").open = true; },
+    },
+    {
+      target: ".generate", placement: "right", title: "Genera la pieza",
+      text: `<p>La barra muestra el <b>% total</b> y cada fase, mientras la boquilla imprime la pieza capa por capa.</p>`,
+      action: { label: "Generar el llavero", busy: "Generando…", run: async () => {
+        $("#print-box").open = false;
+        const ok = await generate();
+        if (!ok) throw new Error("No se pudo generar esta vez.");
+      } },
+    },
+    {
+      target: ".viewer-card", placement: "left", title: "Tu pieza en 3D",
+      text: `<p>Arrastra para girar y usa la rueda para el zoom. Arriba a la izquierda cambias entre versiones; a la derecha tienes alambre, cama y encuadre.</p>`,
+    },
+    {
+      target: "#card-report", placement: "left", title: "¿Se puede imprimir?",
+      text: `<p>Plasmo revisa si la malla está cerrada, los voladizos, la estabilidad, si cabe en tu cama y cuánto pesa.</p><p>Después descarga el <b>3MF</b> o el <b>STL</b>, o ábrelo directo en tu slicer.</p>`,
+      before: () => { $("#card-report").scrollIntoView({ block: "center" }); },
+    },
+    {
+      target: "#btn-chat", placement: "bottom", title: "Tu asistente",
+      text: `<p>Pregúntale por temperaturas, soportes o ajustes del slicer. Conoce la pieza que tienes abierta.</p>`,
+    },
+    {
+      target: "#btn-help", placement: "bottom", title: "Cuando quieras, otra vez",
+      text: `<p>Este botón vuelve a abrir el tutorial.</p>`,
+    },
+    {
+      title: "¡Listo para imprimir!",
+      wide: true,
+      extra: `<div class="tour-hero"><div class="tour-logo" id="tour-logo-end"></div></div>`,
+      text: `<p>Ya sabes todo lo básico. Sube tu primera foto y a imprimir.</p><p class="muted small">La guía para instalar la IA en tu PC está en <b>docs/INSTALAR-IA.md</b>.</p>`,
+      after: async (card) => {
+        const el = card.querySelector("#tour-logo-end");
+        if (el) el.innerHTML = await logoSVG("tourend");
+        const r = card.getBoundingClientRect();
+        celebrate(r.left + r.width / 2, r.top + 60);
+      },
+    },
+  ];
+}
+
+function startTour() {
+  $("#chat").classList.add("hidden");
+  new Tour(buildTourSteps(), {
+    onEnd: () => {
+      if (!state.config?.tutorial_visto) api("/api/config", { method: "PUT", body: { tutorial_visto: true } }).then((c) => { state.config = c; }).catch(() => {});
+    },
+  }).start();
+}
+
 // --------------------------------------------------------------- inicio
 function renderFeatures() {
   $("#features").innerHTML = state.forms.map((f, i) => `<div class="feature" style="--k:${i}"><b>${icon(f.clave)}${esc(f.nombre)}</b><span>${esc(f.descripcion)}</span></div>`).join("");
@@ -681,6 +826,7 @@ function bind() {
   $("#v-wire").addEventListener("click", (e) => e.currentTarget.classList.toggle("on", viewer?.toggleWire()));
   $("#v-bed").addEventListener("click", (e) => e.currentTarget.classList.toggle("on", viewer?.toggleBed()));
   $("#v-reset").addEventListener("click", () => viewer?.frame());
+  $("#btn-help").addEventListener("click", startTour);
   $("#btn-chat").addEventListener("click", () => $("#chat").classList.toggle("hidden"));
   $("#chat-close").addEventListener("click", () => $("#chat").classList.add("hidden"));
   $("#chat-clear").addEventListener("click", () => { state.chat = []; $("#chat-log").innerHTML = ""; addMsg("assistant", "Listo, empezamos de nuevo."); });
@@ -712,7 +858,10 @@ async function init() {
     const linked = new URLSearchParams(location.hash.slice(1)).get("p");
     if (linked) await openProject(linked).catch(() => showWelcome());
   } finally {
-    hideSplash();
+    hideSplash().then(() => {
+      // la primera vez, el tutorial arranca solo al terminar la pantalla de inicio
+      if (state.config && !state.config.tutorial_visto && !location.hash) setTimeout(startTour, 450);
+    });
   }
 }
 

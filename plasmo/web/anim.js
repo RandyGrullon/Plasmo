@@ -202,6 +202,31 @@ export function typingDots() {
   return s;
 }
 
+// Lluvia de capas de colores desde un punto (fin del tutorial)
+export function celebrate(x = window.innerWidth / 2, y = window.innerHeight / 2, n = 46) {
+  if (reducedMotion()) return;
+  for (let k = 0; k < n; k++) {
+    const p = document.createElement("i");
+    p.className = "confetti";
+    p.style.background = heat(Math.random());
+    p.style.left = `${x}px`;
+    p.style.top = `${y}px`;
+    document.body.appendChild(p);
+    const ang = Math.random() * Math.PI * 2;
+    const dist = 120 + Math.random() * 220;
+    const dx = Math.cos(ang) * dist;
+    const dy = Math.sin(ang) * dist - 80;
+    p.animate(
+      [
+        { transform: "translate(0,0) rotate(0deg)", opacity: 1 },
+        { transform: `translate(${dx}px, ${dy}px) rotate(${Math.random() * 540}deg)`, opacity: 1, offset: 0.7 },
+        { transform: `translate(${dx * 1.1}px, ${dy + 160}px) rotate(${Math.random() * 720}deg)`, opacity: 0 },
+      ],
+      { duration: 1300 + Math.random() * 700, easing: "cubic-bezier(.2,.7,.3,1)" }
+    ).onfinish = () => p.remove();
+  }
+}
+
 export function fmtClock(s) {
   s = Math.max(0, Math.round(s));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;

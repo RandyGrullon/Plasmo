@@ -108,24 +108,32 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
     def proyectos():
         return {"proyectos": store().list()}
 
-    @app.post("/api/proyectos")
-    async def crear(imagen: UploadFile = File(...), recorte: str = Form("")):
-        data = await imagen.read()
+    def new_project(data: bytes, filename: str, recorte: str = "", **meta) -> dict:
         if len(data) > 40 * 1024 * 1024:
             raise HTTPException(413, "La imagen pesa más de 40 MB.")
         try:
             img = proc.load_image(data)
         except Exception:
             raise HTTPException(400, "No pude abrir la imagen (usa PNG, JPG o WebP).")
-        name = slug(Path(imagen.filename or "imagen").stem)
-        pid, folder = store().create(name)
+        pid, folder = store().create(slug(Path(filename or "imagen").stem))
         img.save(folder / "original.png")
+        if meta:
+            store().update_meta(pid, **meta)
         try:
             pipeline.segment_project(store(), pid, recorte or settings().bg_model)
         except Exception as exc:
             pipeline.segment_project(store(), pid, "simple")
             store().update_meta(pid, aviso_recorte=f"Recorte simple (sin modelo): {exc}")
         return store().meta(pid)
+
+    @app.post("/api/proyectos")
+    async def crear(imagen: UploadFile = File(...), recorte: str = Form("")):
+        return new_project(await imagen.read(), imagen.filename or "imagen", recorte)
+
+    @app.post("/api/ejemplo")
+    def ejemplo():
+        """Proyecto con la imagen de muestra, para seguir el tutorial sin foto propia."""
+        return new_project((WEB_DIR / "ejemplo.png").read_bytes(), "ejemplo-gatito", ejemplo=True)
 
     @app.get("/api/proyectos/{pid}")
     def proyecto(pid: str):
