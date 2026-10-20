@@ -34,6 +34,34 @@ def test_clean_mask_removes_diagonals():
     assert out[1, 2] and out[2, 1]
 
 
+def test_clean_mask_converges_on_long_diagonal_chains():
+    # escalera diagonal larga: con un tope de vueltas fijo quedaban esquinas sueltas
+    m = np.eye(40, dtype=bool) | np.eye(40, k=2, dtype=bool)
+    mesh = heightfield_solid(np.full(m.shape, 2.0), m, 1.0)
+    assert mesh.is_watertight and mesh.is_volume
+
+
+@pytest.mark.parametrize("pinch", ["fill", "split"])
+def test_checkerboard_is_manifold(pinch):
+    yy, xx = np.mgrid[0:12, 0:12]
+    board = (yy + xx) % 2 == 0  # todo son contactos por esquina
+    top = 2.0 + (xx % 3) * 0.5  # alturas distintas para probar la copia de vértices
+    mesh = heightfield_solid(top, board, 1.0, bottom=0.5, pinch=pinch)
+    assert mesh.is_watertight and mesh.is_winding_consistent and mesh.is_volume
+    assert pr.edge_stats(mesh) == (0, 0)
+    if pinch == "split":
+        assert np.isclose(mesh.volume, ((top - 0.5) * board).sum())  # no se agregó ni quitó nada
+
+
+def test_pixel_art_many_colors_is_printable(src):
+    for colors in (2, 5, 8):
+        parts = forms.pixel_art(src, {"colores": colors, "pixeles": 40}).parts
+        for p in parts:
+            assert p.mesh.is_watertight and p.mesh.is_volume, (colors, p.name)
+        report = pr.analyze(export.combined(parts), thin="aviso")
+        assert report["metricas"]["aristas_no_manifold"] == 0 and report["metricas"]["cerrada"]
+
+
 def test_cylinder_closes_seam():
     flat = heightfield_solid(np.full((30, 60), 2.0), None, 0.5, wrap_x=True)
     cyl = bend_cylinder(flat, 30.0)

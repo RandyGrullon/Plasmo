@@ -373,7 +373,8 @@ def pixel_art(src: Source, params: dict) -> FormResult:
         if not m.any():
             continue
         top = np.full(m.shape, z0 + height)
-        mesh = heightfield_solid(top, m, cell, bottom=z0)
+        # "split": un píxel que toca a otro del mismo color solo por la esquina no cambia de color
+        mesh = heightfield_solid(top, m, cell, bottom=z0, pinch="split")
         color = tuple(int(c) for c in np.clip(centroids[ci], 0, 255))
         parts.append(Part(f"color_{idx + 1}", mesh, color))
     if plate > 0:

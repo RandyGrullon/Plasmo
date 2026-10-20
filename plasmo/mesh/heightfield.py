@@ -14,14 +14,16 @@ import trimesh
 MIN_THICKNESS_MM = 0.2
 
 
-def clean_mask(mask: np.ndarray, max_iter: int = 8) -> np.ndarray:
+def clean_mask(mask: np.ndarray) -> np.ndarray:
     """Rellena los contactos solo-por-esquina (patrones en diagonal 2x2).
 
     Dos píxeles que se tocan solo en una esquina generarían una arista con
-    cuatro caras (no manifold); rellenar el hueco lo evita.
+    cuatro caras (no manifold); rellenar el hueco lo evita. Cada vuelta solo
+    agrega celdas, así que siempre converge; los patrones finos (ojos,
+    bigotes) pueden pedir muchas vueltas.
     """
     m = mask.astype(bool).copy()
-    for _ in range(max_iter):
+    for _ in range(m.size):
         a = m[:-1, :-1]
         b = m[:-1, 1:]
         c = m[1:, :-1]
@@ -60,18 +62,23 @@ def heightfield_solid(
     pixel_mm: float = 0.2,
     bottom: np.ndarray | float = 0.0,
     wrap_x: bool = False,
+    pinch: str = "fill",
 ) -> trimesh.Trimesh:
     """Construye un sólido cerrado a partir de alturas por píxel.
 
     top, bottom: alturas (mm) por píxel, forma (H, W). La fila 0 de la imagen
     queda arriba (+Y). `wrap_x` une el borde izquierdo con el derecho (para
     doblarlo luego en cilindro); en ese caso la máscara debe ser completa.
+    `pinch` decide qué hacer con dos píxeles que se tocan solo por una esquina:
+    "fill" rellena la esquina (pieza más firme) y "split" duplica ese vértice
+    para que cada lado quede cerrado sin cambiar la forma (pixel art).
     """
     top = np.asarray(top, dtype=np.float64)
     h, w = top.shape
     if mask is None:
         mask = np.ones((h, w), dtype=bool)
-    mask = clean_mask(mask)
+    split = pinch == "split" and not wrap_x
+    mask = mask.astype(bool) if split else clean_mask(mask)
     if wrap_x and not mask.all():
         raise ValueError("wrap_x requiere una máscara completa")
     bottom = np.broadcast_to(np.asarray(bottom, dtype=np.float64), (h, w))
@@ -98,17 +105,52 @@ def heightfield_solid(
         return r * cols + (c % cols if wrap_x else c)
 
     rr, cc = np.nonzero(mask)
-    a = corner(rr, cc)          # arriba-izquierda
-    b = corner(rr, cc + 1)      # arriba-derecha
-    c3 = corner(rr + 1, cc + 1)  # abajo-derecha
-    d = corner(rr + 1, cc)      # abajo-izquierda
     off = n_corners
+    # índices arriba (t) y abajo (b) de las cuatro esquinas de cada píxel
+    a_t = corner(rr, cc)            # arriba-izquierda
+    b_t = corner(rr, cc + 1)        # arriba-derecha
+    c_t = corner(rr + 1, cc + 1)    # abajo-derecha
+    d_t = corner(rr + 1, cc)        # abajo-izquierda
+    a_b, b_b, c_b, d_b = a_t + off, b_t + off, c_t + off, d_t + off
+
+    if split:
+        pix = np.full((h, w), -1, dtype=np.int64)
+        pix[rr, cc] = np.arange(len(rr))
+        A, B, C, D = mask[:-1, :-1], mask[:-1, 1:], mask[1:, :-1], mask[1:, 1:]
+        extra = []
+        n_v = len(verts)
+        # (i,j) y (i+1,j+1) comparten la esquina (i+1,j+1): el segundo usa una copia
+        # (i,j+1) e (i+1,j) comparten la misma esquina: el segundo usa una copia
+        for keep, other, field in (
+            (np.nonzero(A & D & ~B & ~C), (1, 1), "a"),
+            (np.nonzero(B & C & ~A & ~D), (1, 0), "b"),
+        ):
+            i, j = keep
+            if not len(i):
+                continue
+            ki, kj = (i, j) if field == "a" else (i, j + 1)
+            oi, oj = i + other[0], j + other[1]
+            ci = corner(i + 1, j + 1)
+            verts[ci, 2] = top[ki, kj]
+            verts[ci + off, 2] = bottom[ki, kj]
+            dup_t = n_v + np.arange(len(i))
+            dup_b = dup_t + len(i)
+            extra.append(np.column_stack([verts[ci, 0], verts[ci, 1], top[oi, oj]]))
+            extra.append(np.column_stack([verts[ci, 0], verts[ci, 1], bottom[oi, oj]]))
+            n_v += 2 * len(i)
+            k = pix[oi, oj]
+            if field == "a":
+                a_t[k], a_b[k] = dup_t, dup_b
+            else:
+                b_t[k], b_b[k] = dup_t, dup_b
+        if extra:
+            verts = np.concatenate([verts, *extra])
 
     faces = [
-        np.stack([d, c3, b], axis=1),
-        np.stack([d, b, a], axis=1),
-        np.stack([d + off, b + off, c3 + off], axis=1),
-        np.stack([d + off, a + off, b + off], axis=1),
+        np.stack([d_t, c_t, b_t], axis=1),
+        np.stack([d_t, b_t, a_t], axis=1),
+        np.stack([d_b, b_b, c_b], axis=1),
+        np.stack([d_b, a_b, b_b], axis=1),
     ]
 
     padded = np.pad(mask, 1)
@@ -121,14 +163,14 @@ def heightfield_solid(
         left_out = ~padded[rr + 1, cc]
         right_out = ~padded[rr + 1, cc + 2]
 
-    def wall(sel, p, q):
-        p, q = p[sel], q[sel]
-        return [np.stack([p + off, p, q], axis=1), np.stack([p + off, q, q + off], axis=1)]
+    def wall(sel, pt, pb, qt, qb):
+        pt, pb, qt, qb = pt[sel], pb[sel], qt[sel], qb[sel]
+        return [np.stack([pb, pt, qt], axis=1), np.stack([pb, qt, qb], axis=1)]
 
-    faces += wall(up_out, a, b)
-    faces += wall(down_out, c3, d)
-    faces += wall(left_out, d, a)
-    faces += wall(right_out, b, c3)
+    faces += wall(up_out, a_t, a_b, b_t, b_b)
+    faces += wall(down_out, c_t, c_b, d_t, d_b)
+    faces += wall(left_out, d_t, d_b, a_t, a_b)
+    faces += wall(right_out, b_t, b_b, c_t, c_b)
 
     mesh = trimesh.Trimesh(vertices=verts, faces=np.concatenate(faces), process=False)
     mesh.remove_unreferenced_vertices()
