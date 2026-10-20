@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv sync --group dev
-      - run: uv run python scripts/hacer_icono.py
+      # el ícono ya está en assets/ (se regenera a mano con scripts/hacer_icono.py)
       - run: uv run pyinstaller --noconfirm --clean plasmo.spec
       - run: Compress-Archive -Path dist/Plasmo -DestinationPath dist/Plasmo-windows.zip
         shell: pwsh
