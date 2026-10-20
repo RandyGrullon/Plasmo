@@ -69,13 +69,15 @@ Ollama escribe el prompt en inglés, pensado para 3D: un solo objeto, fondo blan
 
 ## 4. Plasmo
 
+Lo más simple es bajar `Plasmo-windows.zip` del [último Release](https://github.com/RandyGrullon/Plasmo/releases/latest), descomprimirlo y abrir `Plasmo.exe`. Si prefieres correrlo desde el código:
+
 ```powershell
 git clone https://github.com/RandyGrullon/Plasmo.git
 cd Plasmo
 powershell -ExecutionPolicy Bypass -File scripts\instalar.ps1
 ```
 
-Abre Plasmo. Las dos píldoras de arriba deben estar en verde: **Ollama · qwen3.5:9b** y **ComfyUI · RTX 5070**.
+Abre Plasmo. Las dos píldoras de arriba deben estar en verde: **Ollama · qwen3.5:9b** y **ComfyUI · RTX 5070**. La primera vez se abre un tutorial que hace una pieza contigo con una imagen de ejemplo.
 
 ## Cómo se reparte la VRAM (12 GB)
 
