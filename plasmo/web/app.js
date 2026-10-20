@@ -1,5 +1,6 @@
 import { Viewer } from "/viewer.js";
 import { icon, hydrateIcons } from "/icons.js";
+import { NoiseArt, PrinterArt, fmtClock, logoSVG, reducedMotion, splashReady, thinking, typingDots } from "/anim.js";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -42,7 +43,10 @@ function toast(msg, kind = "") {
   el.className = `toast ${kind}`;
   el.textContent = msg;
   $("#toast").appendChild(el);
-  setTimeout(() => el.remove(), kind === "err" ? 7000 : 3500);
+  setTimeout(() => {
+    el.classList.add("bye");
+    setTimeout(() => el.remove(), 320);
+  }, kind === "err" ? 7000 : 3500);
 }
 
 const fileUrl = (pid, name, download = false) =>
@@ -57,30 +61,51 @@ function watchJob(job, { fixed = false } = {}) {
     if (fixed) { box.style.position = "fixed"; box.style.zIndex = 40; document.body.appendChild(box); }
     else if (box.parentElement !== $(".viewer-card")) { box.style.position = ""; box.style.zIndex = ""; $(".viewer-card").appendChild(box); }
     box.classList.remove("hidden");
+    // texto→imagen se "revela" como una difusión; lo demás se imprime capa por capa
+    const art = job.tipo === "texto" ? new NoiseArt($("#pg-art")) : new PrinterArt($("#pg-art"), 24);
+    const list = $("#pg-phases");
+    list.innerHTML = job.fases.map((f) => `<li data-k="${esc(f.clave)}"><i></i><span>${esc(f.nombre)}</span><span class="pp"></span></li>`).join("");
+    const started = Date.now();
+    const clock = () => { $("#pg-elapsed").textContent = `Tiempo ${fmtClock((Date.now() - started) / 1000)}`; };
+    clock();
+    const tick = setInterval(clock, 500);
     const render = (j) => {
       const pct = j.porcentaje ?? 0;
       $("#pg-pct").textContent = `${Math.round(pct)} %`;
       $("#pg-bar").style.width = `${pct}%`;
       $("#pg-msg").textContent = j.mensaje || "";
       $("#pg-eta").textContent = j.eta_s ? `≈ ${fmtTime(j.eta_s)} restantes` : "";
-      $("#pg-phases").innerHTML = j.fases.map((f) => `<li class="${f.estado}"><i>${f.estado === "lista" ? "✓" : ""}</i>${esc(f.nombre)}${
-        f.estado === "activa" && f.progreso > 0 && f.progreso < 1 ? `<span class="pp">${Math.round(f.progreso * 100)} %</span>` : ""}</li>`).join("");
+      for (const f of j.fases) {
+        const li = list.querySelector(`li[data-k="${CSS.escape(f.clave)}"]`);
+        if (!li) continue;
+        if (li.className !== f.estado) {
+          li.className = f.estado;
+          li.querySelector("i").textContent = f.estado === "lista" ? "✓" : "";
+        }
+        li.querySelector(".pp").textContent = f.estado === "activa" && f.progreso > 0 && f.progreso < 1 ? `${Math.round(f.progreso * 100)} %` : "";
+      }
+      art.set(pct, j.estado);
     };
     render(job);
+    const close = (ok) => {
+      clearInterval(tick);
+      state.job = null;
+      // deja ver el final de la animación antes de cerrar
+      setTimeout(() => box.classList.add("hidden"), ok ? (reducedMotion() ? 150 : 1150) : 800);
+    };
     const timer = setInterval(async () => {
       try {
         const j = await api(`/api/trabajos/${job.id}`);
         render(j);
         if (["listo", "error", "cancelado"].includes(j.estado)) {
           clearInterval(timer);
-          setTimeout(() => box.classList.add("hidden"), j.estado === "listo" ? 350 : 0);
-          state.job = null;
-          if (j.estado === "listo") resolve(j.resultado || {});
+          close(j.estado === "listo");
+          if (j.estado === "listo") setTimeout(() => resolve(j.resultado || {}), reducedMotion() ? 0 : 950);
           else reject(new Error(j.estado === "cancelado" ? "Cancelado" : j.error || "Falló"));
         }
       } catch (e) {
         clearInterval(timer);
-        box.classList.add("hidden");
+        close(false);
         reject(e);
       }
     }, 400);
@@ -120,8 +145,8 @@ async function loadProjects() {
     list.innerHTML = `<div class="empty-list">Aún no hay proyectos.</div>`;
     return;
   }
-  list.innerHTML = proyectos.map((p) => `
-    <div class="project ${state.project?.id === p.id ? "active" : ""}" data-id="${esc(p.id)}">
+  list.innerHTML = proyectos.map((p, i) => `
+    <div class="project ${state.project?.id === p.id ? "active" : ""}" data-id="${esc(p.id)}" style="--k:${Math.min(i, 12)}">
       <img src="${fileUrl(p.id, p.miniatura)}" alt="" loading="lazy">
       <div style="min-width:0"><div class="p-name">${esc(p.nombre || p.id)}</div>
       <div class="p-meta">${p.forma ? esc(formName(p.forma)) : "Sin pieza"} · ${new Date((p.creado || 0) * 1000).toLocaleDateString("es-DO", { day: "numeric", month: "short" })}</div></div>
@@ -137,18 +162,31 @@ async function createProject(file) {
   fd.append("imagen", file, file.name || "pegada.png");
   fd.append("recorte", state.config?.bg_model || "");
   showWorkspace();
-  $("#img-preview").removeAttribute("src");
-  $("#analysis-body").innerHTML = `<span class="spinner"></span> Recortando el sujeto…`;
+  const local = URL.createObjectURL(file);
+  $("#img-preview").src = local;
+  setCutting(true, "Separando el sujeto del fondo…");
+  renderAnalysis(null);
   try {
     const meta = await api("/api/proyectos", { method: "POST", body: fd });
     if (meta.aviso_recorte) toast(meta.aviso_recorte);
     await loadProjects();
-    await openProject(meta.id);
+    setCutting(false);
+    await openProject(meta.id, { reveal: true });
     if (state.status?.ollama?.modelo_listo) analyze();
   } catch (e) {
+    setCutting(false);
     toast(e.message, "err");
     showWelcome();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(local), 4000);
   }
+}
+
+function setCutting(on, label = "") {
+  const box = $(".image-box");
+  box.classList.toggle("cutting", on);
+  box.querySelector(".box-label")?.remove();
+  if (on) box.insertAdjacentHTML("beforeend", `<div class="box-label"><span class="spinner"></span>${esc(label)}</div>`);
 }
 
 function showWorkspace() {
@@ -169,13 +207,13 @@ function showWelcome() {
   $$(".project").forEach((el) => el.classList.remove("active"));
 }
 
-async function openProject(pid) {
+async function openProject(pid, { reveal = false } = {}) {
   const meta = await api(`/api/proyectos/${encodeURIComponent(pid)}`);
   state.project = meta;
   history.replaceState(null, "", `#p=${encodeURIComponent(pid)}`);
   showWorkspace();
   $$(".project").forEach((el) => el.classList.toggle("active", el.dataset.id === pid));
-  renderImage();
+  renderImage(reveal);
   if (meta.recorte?.modelo) $("#cut-model").value = meta.recorte.modelo;
   renderAnalysis(meta.analisis);
   const versions = meta.versiones || [];
@@ -191,11 +229,14 @@ async function openProject(pid) {
   }
 }
 
-function renderImage() {
+function renderImage(reveal = false) {
   const p = state.project;
   if (!p) return;
   const name = state.imgView === "recorte" && p.recorte ? "recorte.png" : "original.png";
-  $("#img-preview").src = fileUrl(p.id, name);
+  const img = $("#img-preview");
+  img.classList.remove("reveal");
+  img.onload = reveal ? () => { void img.offsetWidth; img.classList.add("reveal"); } : null;
+  img.src = fileUrl(p.id, name);
   $$("#img-tabs button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.imgView));
 }
 
@@ -231,7 +272,10 @@ async function analyze() {
   if (!state.project) return;
   const btn = $("#btn-analyze");
   btn.disabled = true;
-  $("#analysis-body").innerHTML = `<span class="spinner"></span> Ollama está mirando la foto…`;
+  const body = $("#analysis-body");
+  body.className = "";
+  const stop = thinking(body);
+  $(".image-box").classList.add("scanning");
   try {
     const job = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}/analizar`, { method: "POST" });
     const res = await pollQuiet(job.id);
@@ -242,9 +286,12 @@ async function analyze() {
       applyRecommendedSize(res.analisis);
     }
   } catch (e) {
+    stop();
     renderAnalysis(state.project.analisis);
     $("#analysis-body").insertAdjacentHTML("afterbegin", `<p class="small" style="color:var(--err)">${esc(e.message)}</p>`);
   } finally {
+    stop();
+    $(".image-box").classList.remove("scanning");
     btn.disabled = false;
   }
 }
@@ -335,6 +382,7 @@ async function generate() {
   const v = state.values[state.form];
   const btn = $("#btn-generate");
   btn.disabled = true;
+  btn.classList.add("busy");
   try {
     const job = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}/generar`, { method: "POST", body: { forma: state.form, ...v } });
     const res = await watchJob(job);
@@ -347,6 +395,7 @@ async function generate() {
     if (e.message !== "Cancelado") toast(e.message, "err");
   } finally {
     btn.disabled = false;
+    btn.classList.remove("busy");
   }
 }
 
@@ -412,6 +461,8 @@ function renderReport(v) {
       <button class="sm" id="open-folder" data-icon="folder">Abrir carpeta</button>
     </div>`;
   hydrateIcons(card);
+  $$(".metric", card).forEach((m, i) => m.style.setProperty("--k", i));
+  $$(".issues li", card).forEach((m, i) => m.style.setProperty("--k", i));
   $("#open-folder").onclick = () => api(`/api/proyectos/${encodeURIComponent(pid)}/abrir`, { method: "POST", body: { version: v.version } })
     .catch((e) => toast(e.message, "err"));
   $("#open-slicer").onclick = () => api(`/api/proyectos/${encodeURIComponent(pid)}/abrir`, { method: "POST", body: { archivo: `${v.version}/${f["3mf"]}` } })
@@ -434,7 +485,8 @@ async function sendChat(text) {
   $("#chat-input").value = "";
   addMsg("user", text);
   state.chat.push({ role: "user", content: text });
-  const out = addMsg("assistant", "…");
+  const out = addMsg("assistant", "");
+  out.appendChild(typingDots());
   try {
     const res = await api("/api/chat", { method: "POST", body: { mensajes: state.chat, proyecto: state.project?.id } });
     const reader = res.body.getReader();
@@ -444,7 +496,7 @@ async function sendChat(text) {
       const { value, done } = await reader.read();
       if (done) break;
       acc += dec.decode(value, { stream: true });
-      out.textContent = acc;
+      if (acc) out.textContent = acc;
       $("#chat-log").scrollTop = 1e9;
     }
     state.chat.push({ role: "assistant", content: acc });
@@ -577,7 +629,7 @@ async function saveSettings() {
 
 // --------------------------------------------------------------- inicio
 function renderFeatures() {
-  $("#features").innerHTML = state.forms.map((f) => `<div class="feature"><b>${icon(f.clave)}${esc(f.nombre)}</b><span>${esc(f.descripcion)}</span></div>`).join("");
+  $("#features").innerHTML = state.forms.map((f, i) => `<div class="feature" style="--k:${i}"><b>${icon(f.clave)}${esc(f.nombre)}</b><span>${esc(f.descripcion)}</span></div>`).join("");
 }
 
 async function fromIdea() {
@@ -613,13 +665,15 @@ function bind() {
     if (!state.project) return;
     const btn = $("#btn-recut");
     btn.disabled = true;
+    setCutting(true, "Recortando de nuevo…");
     try {
       await api(`/api/proyectos/${encodeURIComponent(state.project.id)}/recorte`, { method: "POST", body: { modelo: $("#cut-model").value } });
       state.project = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}`);
       state.imgView = "recorte";
-      renderImage();
+      setCutting(false);
+      renderImage(true);
       loadProjects();
-    } catch (e) { toast(e.message, "err"); } finally { btn.disabled = false; }
+    } catch (e) { toast(e.message, "err"); } finally { setCutting(false); btn.disabled = false; }
   });
   $("#btn-analyze").addEventListener("click", analyze);
   $("#btn-generate").addEventListener("click", generate);
@@ -642,17 +696,24 @@ function bind() {
 }
 
 async function init() {
+  const hideSplash = await splashReady();
   hydrateIcons();
   bind();
-  const [cfg, forms] = await Promise.all([api("/api/config"), api("/api/formas")]);
-  state.config = cfg;
-  state.forms = forms.formas;
-  renderFeatures();
-  await loadProjects();
-  await refreshStatus();
-  setInterval(refreshStatus, 15000);
-  const linked = new URLSearchParams(location.hash.slice(1)).get("p");
-  if (linked) openProject(linked).catch(() => showWelcome());
+  logoSVG("brand").then((svg) => { $("#brand-logo").innerHTML = svg; }).catch(() => {});
+  logoSVG("hero").then((svg) => { $("#hero-logo").innerHTML = svg; }).catch(() => {});
+  try {
+    const [cfg, forms] = await Promise.all([api("/api/config"), api("/api/formas")]);
+    state.config = cfg;
+    state.forms = forms.formas;
+    renderFeatures();
+    await loadProjects();
+    await refreshStatus();
+    setInterval(refreshStatus, 15000);
+    const linked = new URLSearchParams(location.hash.slice(1)).get("p");
+    if (linked) await openProject(linked).catch(() => showWelcome());
+  } finally {
+    hideSplash();
+  }
 }
 
 init().catch((e) => toast(e.message, "err"));

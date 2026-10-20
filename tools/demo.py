@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import tempfile
 from pathlib import Path
@@ -20,7 +21,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools import mock_comfyui, mock_ollama  # noqa: E402
 
-OLLAMA_PORT, COMFY_PORT = 11500, 8199
+
+def free_port(preferred: int) -> int:
+    """El preferido si está libre (p. ej. quedó otro demo abierto); si no, uno cualquiera."""
+    for port in (preferred, 0):
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return s.getsockname()[1]
+            except OSError:
+                continue
+    raise RuntimeError("sin puertos libres")
+
+
+OLLAMA_PORT, COMFY_PORT = free_port(11500), free_port(8199)
 
 
 def main() -> int:
@@ -35,7 +49,8 @@ def main() -> int:
         "output_dir": str(ROOT / "proyectos"),
     })
     cfg_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    mock_comfyui.STEP_DELAY = 0.15
+    mock_comfyui.STEP_DELAY = 0.18
+    mock_ollama.THINK_SECONDS = 2.5
     mock_ollama.serve_in_thread(OLLAMA_PORT)
     mock_comfyui.serve_in_thread(COMFY_PORT)
     print(f"Demo: Ollama simulado :{OLLAMA_PORT} · ComfyUI simulado :{COMFY_PORT} · datos en {ROOT}", flush=True)

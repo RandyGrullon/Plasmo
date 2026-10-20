@@ -26,6 +26,13 @@ Además, en cada pieza:
 - **Repara y prepara**: elimina fragmentos sueltos, tapa agujeros, rehace por vóxeles si hace falta, simplifica, escala en mm, aplana la base, agrega pedestal y divide en partes si no cabe.
 - **Exporta** STL, 3MF (multipieza con colores), OBJ y ZIP de piezas, y lo abre en tu slicer.
 - **Barra de progreso con % total**, con los pasos reales de ComfyUI por WebSocket. Las fases sin pasos se estiman por la duración de las corridas anteriores.
+- **Animaciones** en cada espera:
+  - Al arrancar, las capas del logo se apilan.
+  - Mientras genera, una boquilla imprime la gota capa por capa al ritmo del % real.
+  - En texto → imagen, la imagen se revela desde el ruido.
+  - Mientras la IA analiza, un orbe "piensa" y una línea escanea la foto.
+  - Cada pieza nueva aparece en el visor cortada por un plano de luz y luego gira sola.
+  - Todo respeta la opción "reducir movimiento" de Windows.
 
 ## Cómo funciona
 

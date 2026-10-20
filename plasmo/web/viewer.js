@@ -9,6 +9,7 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.localClippingEnabled = true;
     el.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
@@ -16,6 +17,10 @@ export class Viewer {
     this.camera.position.set(160, 140, 220);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.controls.autoRotateSpeed = 1.1;
+    // gira como tocadiscos hasta que el usuario toma el control
+    this.controls.addEventListener("start", () => { this.controls.autoRotate = false; });
+    this.anim = null;
 
     this.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x1a1410, 1.6));
     const key = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -34,6 +39,7 @@ export class Viewer {
     new ResizeObserver(() => this.resize()).observe(el);
     this.resize();
     const loop = () => {
+      if (this.anim) this.anim(performance.now());
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
       requestAnimationFrame(loop);
@@ -108,7 +114,50 @@ export class Viewer {
     this.frame();
     const box = new THREE.Box3().setFromObject(root);
     const s = box.getSize(new THREE.Vector3());
+    this.controls.autoRotate = true;
+    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) this.reveal(root, box);
     return { x: s.x, y: s.z, z: s.y };
+  }
+
+  // Revela la pieza de abajo hacia arriba con un plano de corte brillante, como si se imprimiera
+  reveal(root, box) {
+    this.anim?.(Infinity);
+    const plane = new THREE.Plane(new THREE.Vector3(0, -1, 0), box.min.y);
+    const meshes = [];
+    root.traverse((o) => { if (o.isMesh) { o.material.clippingPlanes = [plane]; meshes.push(o); } });
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const slice = new THREE.Group();
+    const sheet = new THREE.Mesh(
+      new THREE.PlaneGeometry(size.x * 1.3 + 8, size.z * 1.3 + 8),
+      new THREE.MeshBasicMaterial({ color: 0xff8a50, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    sheet.rotation.x = -Math.PI / 2;
+    const edge = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x * 1.3 + 8, 0.01, size.z * 1.3 + 8)),
+      new THREE.LineBasicMaterial({ color: 0xffc27a, transparent: true, opacity: 0.9 })
+    );
+    slice.add(sheet, edge);
+    slice.position.set(center.x, box.min.y, center.z);
+    this.scene.add(slice);
+    const start = performance.now();
+    const duration = 1400 + Math.min(900, size.y * 4);
+    this.anim = (now) => {
+      const t = Math.min(1, (now - start) / duration);
+      const e = 1 - Math.pow(1 - t, 3);
+      const y = box.min.y + (size.y + 0.5) * e;
+      plane.constant = y;
+      slice.position.y = y;
+      slice.scale.setScalar(1 + 0.08 * Math.sin(t * Math.PI * 6));
+      sheet.material.opacity = 0.22 * (1 - t * 0.7);
+      edge.material.opacity = 0.9 * (1 - t * t);
+      if (t >= 1) {
+        meshes.forEach((m) => { m.material.clippingPlanes = []; });
+        this.scene.remove(slice);
+        sheet.geometry.dispose(); sheet.material.dispose(); edge.geometry.dispose(); edge.material.dispose();
+        this.anim = null;
+      }
+    };
   }
 
   frame() {

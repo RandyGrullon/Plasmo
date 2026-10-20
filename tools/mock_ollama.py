@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 app = FastAPI()
 MODELS = {"qwen3.5:9b": ["completion", "vision", "tools", "thinking"], "llama3.2:3b": ["completion", "tools"]}
 CALLS: list[dict] = []
+THINK_SECONDS = 0.0  # el modo demo lo sube para que se vea el "pensando"
 
 ANALYSIS = {
     "descripcion": "Un muñeco caricaturesco de cabeza naranja con orejas puntiagudas y cuerpo azul.",
@@ -66,6 +67,8 @@ async def chat(request: Request):
         return JSONResponse({"error": f"model '{model}' not found, try pulling it first"}, status_code=404)
     if not body.get("messages"):
         return {"model": model, "done": True, "done_reason": "unload" if body.get("keep_alive") == 0 else "load"}
+    if THINK_SECONDS:
+        await asyncio.sleep(THINK_SECONDS)
     if body.get("format"):
         props = (body["format"] or {}).get("properties", {})
         content = json.dumps(ANALYSIS if "forma_recomendada" in props else {"prompt_en": "a cute orange cat toy, full body, white background", "nombre": "gato naranja"}, ensure_ascii=False)

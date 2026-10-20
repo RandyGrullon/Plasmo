@@ -6,13 +6,21 @@
   <title>Plasmo</title>
   <link rel="icon" href="/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/anim.css">
   <script type="importmap">
     { "imports": { "three": "/vendor/three.module.min.js", "three/addons/": "/vendor/addons/" } }
   </script>
 </head>
 <body>
+  <div id="splash" class="splash" aria-hidden="true">
+    <div class="splash-logo"></div>
+    <div class="splash-word"><span style="--d:0">P</span><span style="--d:1">l</span><span style="--d:2">a</span><span style="--d:3">s</span><span style="--d:4">m</span><span style="--d:5">o</span></div>
+    <div class="splash-tag">De una foto a tu impresora 3D</div>
+    <div class="splash-bar"><i></i></div>
+  </div>
+
   <header class="topbar">
-    <div class="brand"><img src="/logo.svg" alt=""><span>Plasmo</span></div>
+    <div class="brand"><span class="brand-logo" id="brand-logo"><img src="/logo.svg" alt=""></span><span>Plasmo</span></div>
     <div class="status">
       <span class="pill" id="pill-ollama" title="Ollama"><span class="dot"></span><span class="txt">Ollama…</span></span>
       <span class="pill" id="pill-gen" title="Generador 3D"><span class="dot"></span><span class="txt">Generador 3D…</span></span>
@@ -31,8 +39,10 @@
     </aside>
 
     <main id="main">
+      <div class="plasma-bg" aria-hidden="true"><i></i><i></i><i></i></div>
       <!-- Bienvenida -->
       <section id="welcome" class="welcome">
+        <div class="hero-logo" id="hero-logo"></div>
         <h1>De una foto a tu <span>impresora 3D</span></h1>
         <p>Sube una imagen y Plasmo la convierte en una pieza lista para el slicer. Todo corre en tu PC.</p>
         <label class="drop" id="drop">
@@ -103,11 +113,14 @@
             <div class="viewer-empty" id="viewer-empty"><span data-icon="cube"></span><div>Elige una forma y presiona <b>Generar pieza</b>.</div></div>
             <div class="progress hidden" id="progress">
               <div class="progress-box">
-                <div class="progress-top"><b id="pg-pct">0 %</b><span id="pg-eta"></span></div>
-                <div class="bar"><i id="pg-bar"></i></div>
-                <div class="progress-msg" id="pg-msg"></div>
+                <div class="pg-main">
+                  <svg class="pg-art" id="pg-art" aria-hidden="true"></svg>
+                  <div class="progress-top"><b id="pg-pct">0 %</b><span id="pg-eta"></span></div>
+                  <div class="bar"><i id="pg-bar"></i></div>
+                  <div class="progress-msg" id="pg-msg"></div>
+                </div>
                 <ul class="phases" id="pg-phases"></ul>
-                <div class="progress-actions"><button class="sm" id="pg-cancel">Cancelar</button></div>
+                <div class="progress-actions"><span class="muted small" id="pg-elapsed"></span><button class="sm" id="pg-cancel">Cancelar</button></div>
               </div>
             </div>
           </div>
