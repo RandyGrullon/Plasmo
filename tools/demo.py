@@ -40,7 +40,7 @@ OLLAMA_PORT, COMFY_PORT = free_port(11500), free_port(8199)
 def main() -> int:
     (ROOT / "config").mkdir(parents=True, exist_ok=True)
     cfg_file = ROOT / "config" / "config.json"
-    cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
+    cfg = json.loads(cfg_file.read_text(encoding="utf-8-sig")) if cfg_file.exists() else {}
     cfg.update({
         "ollama_url": f"http://127.0.0.1:{OLLAMA_PORT}",
         "comfy_url": f"http://127.0.0.1:{COMFY_PORT}",

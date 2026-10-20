@@ -41,7 +41,7 @@ class Timings:
         self.path = path or CONFIG_DIR / "tiempos.json"
         self._lock = threading.Lock()
         try:
-            self.data: dict[str, float] = json.loads(self.path.read_text(encoding="utf-8"))
+            self.data: dict[str, float] = json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             self.data = {}
 

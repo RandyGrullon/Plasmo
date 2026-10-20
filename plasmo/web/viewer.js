@@ -96,9 +96,19 @@ export class Viewer {
     const gltf = await new GLTFLoader().loadAsync(url);
     this.clear();
     const root = gltf.scene;
+    const tmp = new THREE.Color();
     root.traverse((o) => {
       if (!o.isMesh) return;
-      const hasColor = !!o.geometry.attributes.color;
+      const colors = o.geometry.attributes.color;
+      const hasColor = !!colors;
+      if (colors) {
+        // el GLB trae los colores de vértice en sRGB; three los espera lineales
+        for (let i = 0; i < colors.count; i++) {
+          tmp.fromBufferAttribute(colors, i).convertSRGBToLinear();
+          colors.setXYZ(i, tmp.r, tmp.g, tmp.b);
+        }
+        colors.needsUpdate = true;
+      }
       o.material = new THREE.MeshStandardMaterial({
         color: hasColor ? 0xffffff : 0xff8a55,
         vertexColors: hasColor,

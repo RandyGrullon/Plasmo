@@ -232,7 +232,7 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
 def run_reanalysis(store: ProjectStore, settings: Settings, pid: str, version: str) -> dict:
     """Vuelve a revisar una versión (por ejemplo tras cambiar de impresora)."""
     folder = store.path(pid) / version
-    info = json.loads((folder / "info.json").read_text(encoding="utf-8"))
+    info = json.loads((folder / "info.json").read_text(encoding="utf-8-sig"))
     mesh = trimesh.load(folder / info["archivos"]["stl"], force="mesh")
     info["reporte"] = pr.analyze(mesh, settings.printer.__dict__, thin=thin_policy(info["forma"]))
     (folder / "info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")

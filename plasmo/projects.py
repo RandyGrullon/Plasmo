@@ -51,7 +51,7 @@ class ProjectStore:
 
     def meta(self, pid: str) -> dict:
         try:
-            return json.loads((self._dir(pid) / "proyecto.json").read_text(encoding="utf-8"))
+            return json.loads((self._dir(pid) / "proyecto.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return {"id": pid}
 

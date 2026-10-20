@@ -45,6 +45,7 @@ class Settings:
     bg_model: str = "isnet-general-use"
     depth_model: str = "depth-anything-v2-small"
     output_dir: str = str(DEFAULT_OUTPUT)
+    tutorial_visto: bool = False
     printer: Printer = field(default_factory=Printer)
 
     def to_dict(self) -> dict:
@@ -69,7 +70,8 @@ class ConfigStore:
 
     def _load(self) -> Settings:
         try:
-            return Settings.from_dict(json.loads(self.path.read_text(encoding="utf-8")))
+            # utf-8-sig: acepta el BOM que agregan el Bloc de notas o PowerShell
+            return Settings.from_dict(json.loads(self.path.read_text(encoding="utf-8-sig")))
         except (OSError, ValueError, TypeError):
             return Settings()
 
