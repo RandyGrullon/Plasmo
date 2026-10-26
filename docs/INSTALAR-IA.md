@@ -46,7 +46,7 @@ No hace falta un modelo aparte para el chat: el mismo `qwen3.5:9b` sirve. Plasmo
    | `hunyuan3d-dit-v2_fp16.safetensors` | 4.9 GB | ~6 GB | [Hugging Face](https://huggingface.co/Comfy-Org/hunyuan3D_2.0_repackaged/resolve/main/split_files/hunyuan3d-dit-v2_fp16.safetensors) — respaldo si te falta VRAM |
 
    Va en `checkpoints`, aunque el README del repositorio diga `diffusion_models`: el nodo `ImageOnlyCheckpointLoader` solo busca en `checkpoints`.
-3. Arranca ComfyUI con `run_nvidia_gpu.bat`. Debe responder en `http://127.0.0.1:8188`.
+3. Arranca ComfyUI con `run_nvidia_gpu.bat`, o desde Plasmo con el botón **Encender IA**: busca la carpeta solo (por ejemplo `D:\IA\ComfyUI_windows_portable`) y lo abre sin consola. Debe responder en `http://127.0.0.1:8188`.
 4. *(Opcional, para comprobar)* En ComfyUI abre **Plantillas → 3D → Hunyuan3D 2.1** y genera algo de prueba.
 
 Plasmo arma solo este grafo y lo envía por la API:
@@ -93,7 +93,9 @@ El recorte del fondo y la profundidad corren en la CPU (ONNX), así que no compi
 
 | Síntoma | Solución |
 |---|---|
-| "ComfyUI no responde" | Abre `run_nvidia_gpu.bat`; revisa el puerto en Ajustes (ComfyUI Desktop usa el **8000**, no el 8188) |
+| "ComfyUI no responde" | Pulsa **Encender IA**, o abre `run_nvidia_gpu.bat`. Revisa el puerto en Ajustes: ComfyUI Desktop usa el **8000**, no el 8188 |
+| "No encontré ComfyUI / Ollama" | Indica la carpeta de ComfyUI o la ruta de Ollama en **Ajustes → Motores** |
+| Un motor se cierra al encenderlo | Plasmo muestra las últimas líneas del error; el log completo está en `%LOCALAPPDATA%\Plasmo\motores\` |
 | "Falta hunyuan_3d_v2.1.safetensors" | El archivo no está en `models\checkpoints` o tiene otro nombre: elígelo en Ajustes |
 | "no tiene los nodos de Hunyuan3D" | Actualiza ComfyUI (`update\update_comfyui.bat`) |
 | Se queda sin memoria | Usa el checkpoint 2.0 o baja "Detalle de la malla" a 192 |

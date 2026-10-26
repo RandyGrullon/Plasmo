@@ -61,6 +61,7 @@ Es una alternativa personal y gratuita a [Meshy](https://www.meshy.ai/), pensada
 | 🔍 **Revisión de imprimibilidad** | Malla cerrada, aristas no manifold, agujeros, paredes finas, voladizos sin apoyo, estabilidad, si cabe en la cama y peso estimado. |
 | 🛠️ **Preparación** | Reparación (incluida una rehecha por vóxeles), simplificación, escala en mm, aplanado, pedestal y corte en partes si no cabe. |
 | 📦 **Exportación** | STL, 3MF multipieza con colores (listo para AMS/MMU), OBJ y ZIP de piezas, más un botón para abrirla en tu slicer. |
+| ⏻ **Encender la IA con un clic** | El botón **Encender IA** arranca Ollama y ComfyUI sin abrir consolas. Encuentra solo la app de Ollama y ComfyUI (portable, con git o Desktop), muestra en qué etapa van y puede encenderlos al abrir Plasmo. |
 | 💬 **Asistente** | Chat por streaming que conoce la pieza abierta: temperaturas, soportes y ajustes del slicer. |
 | 🎓 **Tutorial guiado** | Se abre solo la primera vez y recorre la app real con una imagen de ejemplo: recorte, análisis, generación y reporte. |
 | ✨ **Animaciones** | Arranque con capas, impresión capa por capa al ritmo del % real, "pensando" con escaneo, revelado de la pieza en el visor. Respeta "reducir movimiento". |
@@ -94,7 +95,7 @@ ollama pull qwen3.5:9b
 
 Después instala ComfyUI portable y pon `hunyuan_3d_v2.1.safetensors` en `ComfyUI\models\checkpoints`. La guía paso a paso está en [docs/INSTALAR-IA.md](docs/INSTALAR-IA.md).
 
-**3. Sigue el tutorial.** La primera vez se abre solo y hace una pieza contigo con el gatito de ejemplo. Puedes repetirlo desde el botón **Tutorial**.
+**3. Enciende la IA y sigue el tutorial.** Si Ollama o ComfyUI están apagados, pulsa **Encender IA** en la barra superior. Si Plasmo no los encuentra, indica dónde están en **Ajustes → Motores**. La primera vez se abre solo un tutorial que hace una pieza contigo con el gatito de ejemplo; puedes repetirlo desde el botón **Tutorial**.
 
 <details>
 <summary><b>Instalar desde el código fuente</b></summary>
@@ -166,7 +167,9 @@ flowchart LR
 
 ## Configuración
 
-Todo se ajusta desde **Ajustes**: direcciones de Ollama y ComfyUI, modelo de visión (con descarga integrada), checkpoint 3D, recorte, profundidad, medidas de la cama, tecnología (FDM o resina) y material.
+Todo se ajusta desde **Ajustes**: motores (encender y apagar, rutas, encender al abrir), direcciones de Ollama y ComfyUI, modelo de visión (con descarga integrada), checkpoint 3D, recorte, profundidad, medidas de la cama, tecnología (FDM o resina) y material.
+
+Plasmo busca ComfyUI en `D:\IA\ComfyUI_windows_portable` y en las carpetas habituales: `ComfyUI_windows_portable` o `ComfyUI` en la raíz de cada disco, en `IA\`, `AI\`, `Apps\`, Descargas, Escritorio y Documentos. Busca Ollama en su instalación estándar. Solo apaga los motores que él mismo encendió.
 
 | Qué | Dónde |
 |---|---|
@@ -174,6 +177,7 @@ Todo se ajusta desde **Ajustes**: direcciones de Ollama y ComfyUI, modelo de vis
 | Proyectos (imagen, versiones, STL/3MF) | `Documentos\Plasmo\` |
 | Modelos ONNX descargados | `%LOCALAPPDATA%\Plasmo\modelos\` |
 | Registro de errores (sin consola) | `%LOCALAPPDATA%\Plasmo\plasmo.log` |
+| Salida de Ollama y ComfyUI encendidos por Plasmo | `%LOCALAPPDATA%\Plasmo\motores\` |
 
 Las variables `PLASMO_CONFIG_DIR` y `PLASMO_CACHE_DIR` cambian esas carpetas.
 
@@ -183,6 +187,7 @@ Las variables `PLASMO_CONFIG_DIR` y `PLASMO_CACHE_DIR` cambian esas carpetas.
 uv sync --group dev
 uv run pytest                       # geometría, 3MF, clientes y API completa contra simuladores
 uv run python tools/demo.py         # la app entera con Ollama y ComfyUI simulados (sin GPU)
+uv run python tools/demo.py --motores-apagados   # igual, pero para probar el botón «Encender IA»
 uv run python -m plasmo --navegador # abre en el navegador en vez de ventana propia
 ```
 
