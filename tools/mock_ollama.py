@@ -111,4 +111,7 @@ def serve_in_thread(port: int) -> uvicorn.Server:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=11434)
-    uvicorn.run(app, host="127.0.0.1", port=ap.parse_args().port, log_level="warning")
+    ap.add_argument("--pensar", type=float, default=0.0, help="segundos que tarda en responder el análisis")
+    args = ap.parse_args()
+    THINK_SECONDS = args.pensar
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")

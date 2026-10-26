@@ -126,7 +126,7 @@ class ComfyUIGenerator:
 
     # ----------------------------------------------------------------- estado
     def status(self) -> dict:
-        info = {"tipo": self.kind, "nombre": "ComfyUI", "url": self.url, "checkpoint": self.checkpoint, "ok": False, "catalogo": CHECKPOINTS}
+        info = {"tipo": self.kind, "nombre": "ComfyUI", "url": self.url, "checkpoint": self.checkpoint, "ok": False, "responde": False, "catalogo": CHECKPOINTS}
         try:
             with self._client(4) as c:
                 stats = c.get("/system_stats").json()
@@ -137,6 +137,7 @@ class ComfyUIGenerator:
             return info
         dev = (stats.get("devices") or [{}])[0]
         info.update(
+            responde=True,
             version=(stats.get("system") or {}).get("comfyui_version"),
             gpu=dev.get("name"),
             vram_gb=round((dev.get("vram_total") or 0) / 2**30, 1),
@@ -308,7 +309,7 @@ class HunyuanApiGenerator:
         info = {"tipo": self.kind, "nombre": "Hunyuan3D API", "url": self.url, "ok": False}
         try:
             r = httpx.get(self.url + "/docs", timeout=4)
-            info["ok"] = r.status_code < 500
+            info["ok"] = info["responde"] = r.status_code < 500
             info["mensaje"] = "Servidor de Hunyuan3D listo" if info["ok"] else f"HTTP {r.status_code}"
         except httpx.HTTPError:
             info["mensaje"] = f"No responde en {self.url}. Arranca api_server.py (puerto 8081)."

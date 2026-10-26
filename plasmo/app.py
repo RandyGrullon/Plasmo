@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -15,6 +16,7 @@ from PIL import Image
 
 from plasmo import __version__, catalog, generators, pipeline
 from plasmo.config import ConfigStore
+from plasmo.engines import ENGINES, NAMES, EngineManager, start_many
 from plasmo.imaging import downloads
 from plasmo.imaging import processing as proc
 from plasmo.jobs import JobManager
@@ -25,10 +27,12 @@ WEB_DIR = Path(__file__).parent / "web"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 
 
-def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None) -> FastAPI:
+def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None, engines: EngineManager | None = None) -> FastAPI:
     app = FastAPI(title="Plasmo", version=__version__, docs_url="/api/docs", redoc_url=None)
     cfg = config or ConfigStore()
     manager = jobs or JobManager()
+    motores = engines or EngineManager()
+    status_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="estado")
 
     def settings():
         return cfg.settings
@@ -64,6 +68,8 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
     @app.get("/api/estado")
     def estado():
         s = settings()
+        # el generador se consulta en paralelo: un motor apagado cuesta ~2 s en Windows
+        gen_status = status_pool.submit(lambda: generators.get(s).status())
         client = ollama()
         version = client.version()
         info = {"version": __version__, "ollama": {"ok": version is not None, "version": version, "url": s.ollama_url}}
@@ -84,7 +90,7 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
             except Exception as exc:
                 info["ollama"]["error"] = str(exc)
         info["ollama"]["recomendados"] = RECOMMENDED
-        info["generador"] = generators.get(s).status()
+        info["generador"] = gen_status.result()
         info["onnx"] = [
             {"clave": m.key, "nombre": m.label, "tipo": m.kind, "mb": m.size_mb, "descargado": downloads.is_downloaded(m.key)}
             for m in downloads.CATALOG.values()
@@ -296,6 +302,30 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
                 yield "\n\n⚠️ No pude hablar con Ollama. ¿Está abierto?"
 
         return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
+
+    # -------------------------------------------------------------- motores
+    def pick_engines(body: dict) -> list[str]:
+        names = body.get("motores") or list(ENGINES)
+        bad = [n for n in names if n not in ENGINES]
+        if bad:
+            raise HTTPException(400, f"Motor desconocido: {', '.join(bad)}")
+        return names
+
+    @app.get("/api/motores")
+    def motores_estado():
+        return motores.status(settings())
+
+    @app.post("/api/motores/encender")
+    async def motores_encender(request: Request):
+        names = pick_engines(await request.json() if request.headers.get("content-length") not in (None, "0") else {})
+        s = settings()
+        phases = [(n, f"Encender {NAMES[n]}", 1 if n == "ollama" else 4) for n in names]
+        return manager.submit("motores", phases, lambda job: start_many(motores, names, s, job)).to_dict()
+
+    @app.post("/api/motores/apagar")
+    async def motores_apagar(request: Request):
+        names = pick_engines(await request.json() if request.headers.get("content-length") not in (None, "0") else {})
+        return {n: motores.stop(n) for n in names}
 
     # ------------------------------------------------------------ descargas
     @app.post("/api/ollama/descargar")

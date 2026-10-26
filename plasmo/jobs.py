@@ -62,7 +62,7 @@ class Timings:
 DEFAULT_SECONDS = {
     "preparar": 4, "analizar_ia": 25, "liberar_vram": 2, "generar": 90, "convertir": 4, "reparar": 12,
     "imprimir": 6, "profundidad": 4, "construir": 6, "simplificar": 6, "revisar": 6, "exportar": 5,
-    "prompt": 15, "imagen": 40, "descargar": 60,
+    "prompt": 15, "imagen": 40, "descargar": 60, "ollama": 6, "comfyui": 40,
 }
 
 
@@ -104,6 +104,16 @@ class Job:
         if detail:
             p.detail = detail
             self.message = detail
+
+    def note(self, key: str, detail: str) -> None:
+        """Cambia el texto de la fase sin tocar su avance (sigue estimado por tiempo)."""
+        self.check()
+        self._phase(key).detail = detail
+        self.message = detail
+
+    def fail(self, key: str) -> None:
+        p = self._phase(key)
+        p.state, p.progress = "error", 1.0
 
     def done(self, key: str) -> None:
         p = self._phase(key)

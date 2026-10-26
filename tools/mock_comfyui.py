@@ -177,11 +177,31 @@ def serve_in_thread(port: int) -> uvicorn.Server:
     return server
 
 
+BOOT_LOG = [
+    "Checkpoint files will always be loaded safely.",
+    "Total VRAM 12227 MB, total RAM 32693 MB",
+    "pytorch version: 2.9.0+cu130",
+    "Using pytorch attention",
+    "Import times for custom nodes:",
+    "Starting server",
+]
+
+
 if __name__ == "__main__":
+    import time
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8188)
     ap.add_argument("--lento", action="store_true", help="pasos más lentos para ver la barra")
+    ap.add_argument("--paso", type=float, default=None, help="segundos por paso de muestreo")
+    ap.add_argument("--arranque", type=float, default=0.0, help="segundos que tarda en arrancar (imita ComfyUI)")
     args = ap.parse_args()
     if args.lento:
         STEP_DELAY = 0.4
+    if args.paso is not None:
+        STEP_DELAY = args.paso
+    for line in BOOT_LOG:  # mismas pistas que el ComfyUI real, para la barra de "encendiendo"
+        print(line, flush=True)
+        time.sleep(args.arranque / len(BOOT_LOG))
+    print(f"To see the GUI go to: http://127.0.0.1:{args.port}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")

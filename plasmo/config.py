@@ -46,6 +46,12 @@ class Settings:
     depth_model: str = "depth-anything-v2-small"
     output_dir: str = str(DEFAULT_OUTPUT)
     tutorial_visto: bool = False
+    # motores: vacío = Plasmo los busca solo; los comandos personalizados mandan si existen
+    ollama_exe: str = ""
+    comfy_dir: str = ""
+    ollama_comando: str = ""
+    comfy_comando: str = ""
+    encender_al_abrir: bool = False
     printer: Printer = field(default_factory=Printer)
 
     def to_dict(self) -> dict:

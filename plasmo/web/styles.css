@@ -74,6 +74,19 @@ button svg { width: 16px; height: 16px; flex: none; }
 .dot.warn { background: var(--warn); }
 .dot.err { background: var(--err); }
 .actions { display: flex; gap: 6px; margin-left: auto; }
+.power {
+  padding: 4px 12px 4px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; white-space: nowrap;
+  color: var(--accent); background: var(--accent-soft); border-color: rgba(255, 122, 69, 0.45);
+}
+.power:hover { background: rgba(255, 122, 69, 0.22); border-color: var(--accent); }
+.power svg { width: 14px; height: 14px; }
+.power.busy { color: var(--warn); background: rgba(245, 184, 75, 0.12); border-color: rgba(245, 184, 75, 0.45); cursor: progress; }
+.power.busy svg { animation: spin 1.1s linear infinite; }
+.dot.pulse { animation: dotPulse 1s ease-in-out infinite; }
+@keyframes dotPulse { 50% { transform: scale(1.5); opacity: 0.55; } }
+.engine-row .chip.on { color: var(--ok); border-color: rgba(62, 207, 142, 0.4); }
+.engine-row .chip.off { color: var(--err); border-color: rgba(255, 93, 93, 0.4); }
+.engine-row code { word-break: break-all; }
 
 /* ---------- layout ---------- */
 .layout { display: flex; height: calc(100% - 56px); }

@@ -121,6 +121,7 @@ function fmtTime(s) {
 
 // ------------------------------------------------------------- estado
 async function refreshStatus() {
+  if (state.starting) return; // las píldoras muestran el arranque en curso
   try {
     const st = await api("/api/estado");
     state.status = st;
@@ -135,7 +136,75 @@ async function refreshStatus() {
     pillG.querySelector(".dot").className = `dot ${g.ok ? "ok" : "err"}`;
     pillG.querySelector(".txt").textContent = g.ok ? `${g.nombre} · ${g.gpu ? g.gpu.replace(/^cuda:\d+\s*/, "").replace("NVIDIA GeForce ", "") : "listo"}` : `${g.nombre} sin conexión`;
     pillG.title = g.mensaje || "";
+    renderPower();
   } catch {}
+}
+
+// ------------------------------------------------------ encender motores
+const ENGINE_NAMES = { ollama: "Ollama", comfyui: "ComfyUI" };
+const ENGINE_PILL = { ollama: "#pill-ollama", comfyui: "#pill-gen" };
+
+function enginesOff(st = state.status) {
+  if (!st) return [];
+  const off = [];
+  if (!st.ollama.ok) off.push("ollama");
+  if (st.generador.tipo === "comfyui" && !st.generador.responde) off.push("comfyui");
+  return off;
+}
+
+function renderPower() {
+  if (state.starting) return;
+  const off = enginesOff();
+  const btn = $("#btn-power");
+  btn.classList.toggle("hidden", !off.length);
+  btn.querySelector(".power-label").textContent = off.length > 1 ? "Encender IA" : off.length ? `Encender ${ENGINE_NAMES[off[0]]}` : "";
+  btn.title = off.length ? `Arranca ${off.map((n) => ENGINE_NAMES[n]).join(" y ")} sin abrir ventanas` : "";
+}
+
+async function startEngines(names = enginesOff()) {
+  if (!names.length || state.starting) return false;
+  const btn = $("#btn-power");
+  const label = btn.querySelector(".power-label");
+  state.starting = true;
+  btn.classList.remove("hidden");
+  btn.classList.add("busy");
+  btn.disabled = true;
+  label.textContent = "Encendiendo…";
+  for (const n of names) {
+    $(`${ENGINE_PILL[n]} .dot`).className = "dot warn pulse";
+    $(`${ENGINE_PILL[n]} .txt`).textContent = `${ENGINE_NAMES[n]}: en cola…`;
+  }
+  let ok = false;
+  try {
+    const job = await api("/api/motores/encender", { method: "POST", body: { motores: names } });
+    let j = job;
+    while (!["listo", "error", "cancelado"].includes(j.estado)) {
+      await new Promise((r) => setTimeout(r, 500));
+      j = await api(`/api/trabajos/${job.id}`);
+      label.textContent = `Encendiendo… ${Math.round(j.porcentaje)} %`;
+      btn.title = j.mensaje || "";
+      for (const f of j.fases) {
+        const txt = $(`${ENGINE_PILL[f.clave]} .txt`);
+        if (f.estado === "activa") txt.textContent = f.detalle || `${ENGINE_NAMES[f.clave]}: arrancando…`;
+        else if (f.estado === "lista") txt.textContent = `${ENGINE_NAMES[f.clave]}: listo`;
+      }
+    }
+    if (j.estado === "error") throw new Error(j.error);
+    const res = j.resultado?.resultados || {};
+    const bad = Object.entries(res).filter(([, r]) => r.estado === "error");
+    const good = Object.entries(res).filter(([, r]) => r.estado !== "error").map(([n]) => ENGINE_NAMES[n]);
+    if (good.length) toast(`${good.join(" y ")} ${good.length > 1 ? "encendidos" : "encendido"}`, "ok");
+    bad.forEach(([, r]) => toast(r.mensaje.split("\n")[0], "err"));
+    ok = !bad.length;
+  } catch (e) {
+    toast(`${e.message.split("\n")[0]} · Revisa Ajustes → Motores.`, "err");
+  } finally {
+    state.starting = false;
+    btn.classList.remove("busy");
+    btn.disabled = false;
+    await refreshStatus();
+  }
+  return ok;
 }
 
 // ----------------------------------------------------------- proyectos
@@ -510,7 +579,7 @@ async function sendChat(text) {
 
 // -------------------------------------------------------------- ajustes
 async function openSettings() {
-  const [cfg, st] = await Promise.all([api("/api/config"), api("/api/estado")]);
+  const [cfg, st, mot] = await Promise.all([api("/api/config"), api("/api/estado"), api("/api/motores")]);
   state.config = cfg;
   state.status = st;
   const o = st.ollama;
@@ -522,6 +591,23 @@ async function openSettings() {
   const ckptOptions = (sel) => [...new Set([sel, ...ckpts].filter(Boolean))].map((c) => `<option ${c === sel ? "selected" : ""}>${esc(c)}</option>`).join("");
   const p = cfg.printer;
   $("#settings-body").innerHTML = `
+    <section>
+      <h3>Motores</h3>
+      <div id="engine-rows">${Object.keys(ENGINE_NAMES).map((n) => engineRow(n, mot[n])).join("")}</div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="field"><label>Ruta de Ollama (opcional)</label><input type="text" id="s-ollama-exe" data-engine-field placeholder="Se busca sola" value="${esc(cfg.ollama_exe)}"></div>
+        <div class="field"><label>Carpeta de ComfyUI</label><input type="text" id="s-comfy-dir" data-engine-field placeholder="Ej.: D:\\IA\\ComfyUI_windows_portable" value="${esc(cfg.comfy_dir)}"></div>
+      </div>
+      <label class="switch"><input type="checkbox" id="s-autostart" ${cfg.encender_al_abrir ? "checked" : ""}>Encender los motores al abrir Plasmo</label>
+      <details class="params">
+        <summary>Avanzado: comandos personalizados</summary>
+        <div class="grid2" style="margin-top:8px">
+          <div class="field"><label>Comando de Ollama</label><input type="text" id="s-ollama-cmd" data-engine-field value="${esc(cfg.ollama_comando)}"></div>
+          <div class="field"><label>Comando de ComfyUI</label><input type="text" id="s-comfy-cmd" data-engine-field value="${esc(cfg.comfy_comando)}"></div>
+        </div>
+        <div class="hint">Si los llenas, Plasmo los usa en vez de buscar las instalaciones. Ejemplo: <code>"D:\\IA\\ComfyUI_windows_portable\\python_embeded\\python.exe" -s ComfyUI\\main.py --lowvram --port 8188</code></div>
+      </details>
+    </section>
     <section>
       <h3>Ollama · visión y chat</h3>
       <div class="grid2">
@@ -578,9 +664,62 @@ async function openSettings() {
       <input type="text" id="s-out" value="${esc(cfg.output_dir)}">
     </section>`;
   hydrateIcons($("#settings-body"));
+  bindEngineRows();
+  $$("[data-engine-field]").forEach((el) => el.addEventListener("change", async () => {
+    await api("/api/config", { method: "PUT", body: engineFields() });
+    refreshEngineRows();
+  }));
   $$("[data-pull]").forEach((b) => b.addEventListener("click", () => downloadJob(b, "/api/ollama/descargar", { modelo: b.dataset.pull })));
   $$("[data-onnx]").forEach((b) => b.addEventListener("click", () => downloadJob(b, "/api/onnx/descargar", { clave: b.dataset.onnx })));
-  $("#settings").showModal();
+  if (!$("#settings").open) $("#settings").showModal();
+}
+
+function engineFields() {
+  return {
+    ollama_exe: $("#s-ollama-exe").value.trim(),
+    comfy_dir: $("#s-comfy-dir").value.trim(),
+    ollama_comando: $("#s-ollama-cmd").value.trim(),
+    comfy_comando: $("#s-comfy-cmd").value.trim(),
+    encender_al_abrir: $("#s-autostart").checked,
+  };
+}
+
+function engineRow(n, m) {
+  const missing = n === "ollama" ? "No encontré Ollama: instálalo desde ollama.com o indica su ruta abajo." : "No encontré ComfyUI: indica su carpeta abajo.";
+  const action = m.encendido
+    ? (m.lanzado_por_plasmo ? `<button class="sm" data-motor-off="${n}">Apagar</button>` : "")
+    : `<button class="sm" data-motor-on="${n}" data-icon="power" ${m.encontrado ? "" : "disabled"}>Encender</button>`;
+  return `<div class="model-row engine-row" data-motor="${n}">
+    <div class="grow"><b>${esc(m.nombre)}</b> <span class="chip ${m.encendido ? "on" : "off"}">${m.encendido ? "Encendido" : "Apagado"}</span>
+      ${m.lanzado_por_plasmo ? `<span class="muted small">· lo encendió Plasmo</span>` : ""}
+      <div class="muted small"><code>${esc(m.encontrado ? m.descripcion : missing)}</code></div></div>${action}</div>`;
+}
+
+async function refreshEngineRows() {
+  const box = $("#engine-rows");
+  if (!box) return;
+  const mot = await api("/api/motores");
+  box.innerHTML = Object.keys(ENGINE_NAMES).map((n) => engineRow(n, mot[n])).join("");
+  hydrateIcons(box);
+  bindEngineRows();
+}
+
+function bindEngineRows() {
+  $$("[data-motor-on]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    b.innerHTML = `<span class="spinner"></span> Encendiendo…`;
+    await api("/api/config", { method: "PUT", body: engineFields() });
+    await startEngines([b.dataset.motorOn]);
+    refreshEngineRows();
+  }));
+  $$("[data-motor-off]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    b.innerHTML = `<span class="spinner"></span> Apagando…`;
+    await api("/api/motores/apagar", { method: "POST", body: { motores: [b.dataset.motorOff] } });
+    toast(`${ENGINE_NAMES[b.dataset.motorOff]} apagado`);
+    await refreshEngineRows();
+    refreshStatus();
+  }));
 }
 
 async function downloadJob(btn, url, body) {
@@ -620,6 +759,7 @@ async function saveSettings() {
     bg_model: $("#s-bg").value,
     depth_model: $("#s-depth").value,
     output_dir: $("#s-out").value.trim(),
+    ...engineFields(),
     printer: { bed_x: num("#s-bx"), bed_y: num("#s-by"), bed_z: num("#s-bz"), nozzle: num("#s-noz"), kind: $("#s-kind").value, material: $("#s-mat").value },
   };
   state.config = await api("/api/config", { method: "PUT", body: data });
@@ -672,7 +812,7 @@ function buildTourSteps() {
     },
     {
       target: ".status", placement: "bottom", title: "Tus motores de IA",
-      text: `<p><b>Ollama</b> mira la foto y te aconseja. <b>ComfyUI</b> con Hunyuan3D genera la figura 3D.</p><p>Verde es listo; si uno está en rojo, haz clic en él.</p>`,
+      text: `<p><b>Ollama</b> mira la foto y te aconseja. <b>ComfyUI</b> con Hunyuan3D genera la figura 3D.</p><p>Verde es listo. Si están apagados, el botón <b>Encender IA</b> los arranca sin abrir ventanas; si no los encuentra, indícale dónde están en Ajustes.</p>`,
       extra: engineStatus,
       before: async () => { showWelcome(); await refreshStatus(); },
     },
@@ -827,6 +967,7 @@ function bind() {
   $("#v-bed").addEventListener("click", (e) => e.currentTarget.classList.toggle("on", viewer?.toggleBed()));
   $("#v-reset").addEventListener("click", () => viewer?.frame());
   $("#btn-help").addEventListener("click", startTour);
+  $("#btn-power").addEventListener("click", () => startEngines());
   $("#btn-chat").addEventListener("click", () => $("#chat").classList.toggle("hidden"));
   $("#chat-close").addEventListener("click", () => $("#chat").classList.add("hidden"));
   $("#chat-clear").addEventListener("click", () => { state.chat = []; $("#chat-log").innerHTML = ""; addMsg("assistant", "Listo, empezamos de nuevo."); });
@@ -855,6 +996,7 @@ async function init() {
     await loadProjects();
     await refreshStatus();
     setInterval(refreshStatus, 15000);
+    if (cfg.encender_al_abrir && enginesOff().length) startEngines();
     const linked = new URLSearchParams(location.hash.slice(1)).get("p");
     if (linked) await openProject(linked).catch(() => showWelcome());
   } finally {
