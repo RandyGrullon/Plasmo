@@ -27,6 +27,7 @@ class Part:
     name: str
     mesh: trimesh.Trimesh
     color: tuple[int, int, int] = (230, 126, 80)
+    vertex_colors: np.ndarray | None = None  # (N, 3) uint8: colores de la foto sobre la figura
 
 
 @dataclass
@@ -41,24 +42,36 @@ class Source:
     def __init__(self, image: Image.Image, mask: np.ndarray, depth_model: str = "depth-anything-v2-small"):
         self.image = image
         self.mask = mask
+        self.box = proc.cut_box(mask)
         self.cut = proc.cutout(image, mask)
         self.cut_mask = np.asarray(self.cut.getchannel("A"), dtype=np.float32) / 255.0
         self.depth_model = depth_model
         self._depth: np.ndarray | None = None
+        self._detail: np.ndarray | None = None
+
+    def on_white(self) -> Image.Image:
+        rgb = Image.new("RGB", self.cut.size, (255, 255, 255))
+        rgb.paste(self.cut, mask=self.cut.getchannel("A"))
+        return rgb
 
     def relief_map(self, source: str) -> np.ndarray:
         """Altura relativa [0,1] sobre el recorte: profundidad IA o luminancia."""
         if source == "luminancia" or self.depth_model == "luminancia":
-            rgb = Image.new("RGB", self.cut.size, (255, 255, 255))
-            rgb.paste(self.cut, mask=self.cut.getchannel("A"))
-            return proc.luminance(rgb)
+            return proc.luminance(self.on_white())
         if self._depth is None:
             try:
-                self._depth = proc.depth(self.cut.convert("RGB"), self.depth_model)
+                # la foto real (con su fondo) da más contexto al modelo que el recorte sobre blanco
+                self._depth = proc.depth(self.image.convert("RGB").crop(self.box), self.depth_model)
             except Exception:  # sin modelo o sin red: no frenamos la pieza
                 self.depth_model = "luminancia"
                 return self.relief_map("luminancia")
         return self._depth
+
+    def detail_map(self) -> np.ndarray:
+        """Detalle fino del sujeto (ojos, bordes, texturas) en [-1, 1]."""
+        if self._detail is None:
+            self._detail = proc.high_detail(self.on_white())
+        return self._detail
 
 
 # ------------------------------------------------------------------ utilidades
@@ -107,10 +120,41 @@ def disk(shape: tuple[int, int], cy: float, cx: float, r: float) -> np.ndarray:
     return (yy - cy) ** 2 + (xx - cx) ** 2 <= r * r
 
 
-def solid_silhouette(mask: np.ndarray) -> np.ndarray:
-    m = proc.largest_component(mask > 0.5)
+def solid_silhouette(mask: np.ndarray, keep: str = "todo") -> np.ndarray:
+    """Silueta limpia: contorno suavizado (sin escalones) y, por defecto, todos los objetos."""
+    soft = ndimage.gaussian_filter(np.asarray(mask, np.float32), 0.9)
+    m = soft > 0.5
+    m = proc.keep_components(m, 0.004) if keep == "todo" else proc.largest_component(m)
     m = ndimage.binary_closing(m, iterations=2)
     return ndimage.binary_fill_holes(m)
+
+
+def connect_islands(mask: np.ndarray, width_px: float) -> np.ndarray:
+    """Une los objetos sueltos a la pieza principal con un puente, para imprimir una sola pieza."""
+    out = mask.copy()
+    for _ in range(32):
+        labels, n = ndimage.label(out)
+        if n <= 1:
+            break
+        sizes = ndimage.sum(np.ones_like(labels), labels, index=np.arange(1, n + 1))
+        main = labels == (int(np.argmax(sizes)) + 1)
+        dist, (iy, ix) = ndimage.distance_transform_edt(~main, return_indices=True)
+        others = (labels > 0) & ~main
+        flat = np.where(others, dist, np.inf)
+        y, x = np.unravel_index(int(np.argmin(flat)), flat.shape)
+        ty, tx = iy[y, x], ix[y, x]
+        img = Image.fromarray(out.astype(np.uint8) * 255)
+        ImageDraw.Draw(img).line([(x, y), (tx, ty)], fill=255, width=max(2, int(round(width_px))))
+        out = np.asarray(img) > 127
+    return out
+
+
+def bevel(rel: np.ndarray, subj: np.ndarray, width_px: float) -> np.ndarray:
+    """Baja el relieve suave hacia el borde del sujeto (canto pulido en vez de cortado a pico)."""
+    if width_px <= 0.5 or not subj.any():
+        return rel
+    t = np.clip(ndimage.distance_transform_edt(subj) / width_px, 0, 1)
+    return rel * (t * t * (3 - 2 * t))
 
 
 def badge_mask(shape: str, w: int, h: int) -> np.ndarray:
@@ -155,7 +199,7 @@ def badge_mask(shape: str, w: int, h: int) -> np.ndarray:
     return np.asarray(img) > 127
 
 
-def _subject_layers(src: Source, w: int, h: int, params: dict) -> tuple[np.ndarray, np.ndarray]:
+def _subject_layers(src: Source, w: int, h: int, params: dict, res: float) -> tuple[np.ndarray, np.ndarray]:
     """Máscara del sujeto y relieve normalizado [0,1] a tamaño de grilla."""
     subj = solid_silhouette(resample(src.cut_mask, w, h))
     rel = resample(src.relief_map(_p(params, "fuente", "profundidad")), w, h)
@@ -166,13 +210,17 @@ def _subject_layers(src: Source, w: int, h: int, params: dict) -> tuple[np.ndarr
     if _p(params, "invertir", False):
         rel = 1 - rel
     rel = proc.apply_curve(rel, _p(params, "curva", "linear"), _p(params, "gamma", 1.0))
-    sigma = _p(params, "suavizado", 1.0)
+    sigma = _p(params, "suavizado", 0.6)
     if sigma > 0:
         rel = ndimage.gaussian_filter(rel, sigma)
+    detail = _p(params, "detalle", 0.35)
+    if detail > 0:  # ojos, bordes y texturas de la foto que la profundidad sola aplana
+        rel = np.clip(rel + detail * 0.22 * resample(src.detail_map(), w, h), 0, 1)
+    rel = bevel(rel, subj, _p(params, "bisel_mm", 0.8) / res)
     return subj, rel * subj
 
 
-def _place_in(badge: np.ndarray, src: Source, params: dict, border_px: float) -> tuple[np.ndarray, np.ndarray]:
+def _place_in(badge: np.ndarray, src: Source, params: dict, border_px: float, res: float) -> tuple[np.ndarray, np.ndarray]:
     """Mete el sujeto centrado dentro de una placa, respetando su proporción."""
     h, w = badge.shape
     inner = erode(badge, border_px * 1.6)
@@ -185,7 +233,7 @@ def _place_in(badge: np.ndarray, src: Source, params: dict, border_px: float) ->
     aspect = src.cut.width / src.cut.height
     pw, ph = (bw, max(2, int(bw / aspect))) if bw / bh < aspect else (max(2, int(bh * aspect)), bh)
     pw, ph = int(pw * 0.92), int(ph * 0.92)
-    s, r = _subject_layers(src, pw, ph, params)
+    s, r = _subject_layers(src, pw, ph, params, res)
     x0 = int(xs.min() + (bw - pw) / 2)
     y0 = int(ys.min() + (bh - ph) / 2)
     subj[y0 : y0 + ph, x0 : x0 + pw] = s
@@ -203,15 +251,16 @@ def _outline_or_badge(src: Source, params: dict, size_default: float) -> tuple[n
     if shape == "silueta":
         w, h, res = fit_grid(src.cut.width / src.cut.height, max(size - 2 * border, 5), res_mm)
         pad = int(math.ceil(border / res)) + 2
-        subj, rel = _subject_layers(src, w, h, params)
+        subj, rel = _subject_layers(src, w, h, params, res)
         subj = np.pad(subj, pad)
         rel = np.pad(rel, pad)
-        outline = dilate(subj, border / res)
+        # objetos sueltos: un puente del ancho del borde los deja en una sola pieza
+        outline = connect_islands(dilate(subj, border / res), max(2 * border / res, 3))
         return outline, subj, rel, res, border
     aspect = src.cut.width / src.cut.height if shape == "rectangulo" else 1.0
     w, h, res = fit_grid(aspect, size, res_mm)
     outline = badge_mask(shape, w, h)
-    subj, rel = _place_in(outline, src, params, border / res)
+    subj, rel = _place_in(outline, src, params, border / res, res)
     return outline, subj, rel, res, border
 
 

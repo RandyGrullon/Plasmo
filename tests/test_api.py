@@ -97,6 +97,9 @@ def test_figure_with_comfyui(client):
     assert out["reporte"]["metricas"]["cerrada"]
     assert out["reporte"]["dimensiones_mm"][2] == pytest.approx(90 - 1 + 3, abs=2.5)  # aplanado + base
     assert out["reporte"]["estabilidad"]["estable"]
+    assert "obj_color" in out["archivos"]  # la figura sale con los colores de la foto
+    obj = client.get(f"/api/proyectos/{pid}/archivo/{out['version']}/{out['archivos']['obj_color']}").text
+    assert next(line for line in obj.splitlines() if line.startswith("v ")).count(" ") == 6
 
 
 def test_pixel_3mf_has_parts(client):
@@ -147,13 +150,16 @@ def test_bad_file_and_path(client):
 
 
 def test_workflow_matches_official_template():
-    wf = hunyuan_workflow("foto.png", "hunyuan_3d_v2.1.safetensors", {})
-    assert wf["6"]["inputs"]["resolution"] == 4096
-    assert wf["7"]["inputs"]["steps"] == 30 and wf["7"]["inputs"]["cfg"] == 5.0
+    fast = hunyuan_workflow("foto.png", "hunyuan_3d_v2.1.safetensors", {"calidad": "rapida"})
+    assert fast["6"]["inputs"]["resolution"] == 4096  # igual que la plantilla oficial
+    assert fast["7"]["inputs"]["steps"] == 30 and fast["7"]["inputs"]["cfg"] == 5.0
+    assert fast["8"]["inputs"]["octree_resolution"] == 256
+    best = hunyuan_workflow("foto.png", "hunyuan_3d_v2.1.safetensors", {})  # por defecto: calidad máxima
+    assert best["7"]["inputs"]["steps"] == 50 and best["8"]["inputs"]["octree_resolution"] == 512
     wf20 = hunyuan_workflow("foto.png", "hunyuan3d-dit-v2_fp16.safetensors", {"octree": 384})
     assert wf20["6"]["inputs"]["resolution"] == 3072 and wf20["7"]["inputs"]["cfg"] == 8.0
     assert wf20["8"]["inputs"]["octree_resolution"] == 384
-    assert wf["10"]["class_type"] == "SaveGLB" and wf["1"]["class_type"] == "ImageOnlyCheckpointLoader"
+    assert best["10"]["class_type"] == "SaveGLB" and best["1"]["class_type"] == "ImageOnlyCheckpointLoader"
 
 
 def test_comfy_rejects_missing_checkpoint(comfy_url):

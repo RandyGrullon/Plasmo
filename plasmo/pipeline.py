@@ -9,11 +9,13 @@ from pathlib import Path
 import numpy as np
 import trimesh
 from PIL import Image
+from scipy.spatial import cKDTree
 
 from plasmo import generators
 from plasmo.config import Settings
 from plasmo.imaging import processing as proc
 from plasmo.jobs import Job
+from plasmo.mesh import color as paint
 from plasmo.mesh import export, forms
 from plasmo.mesh import printability as pr
 from plasmo.ollama_client import OllamaClient
@@ -72,20 +74,26 @@ def load_source(store: ProjectStore, pid: str, settings: Settings) -> forms.Sour
     return forms.Source(img, mask, settings.depth_model)
 
 
-def segment_project(store: ProjectStore, pid: str, model_key: str) -> dict:
-    """Recorta el sujeto y guarda máscara + recorte. 'ninguno' usa la imagen completa."""
+def segment_project(store: ProjectStore, pid: str, model_key: str, objects: str = "todos") -> dict:
+    """Recorta el sujeto y guarda máscara + recorte. 'ninguno' usa la imagen completa.
+
+    `objects`: "todos" conserva todo lo que se detecte; "principal" deja solo el protagonista.
+    """
     folder = store.path(pid)
     img = proc.load_image(folder / "original.png")
+    info: dict = {}
     if model_key == "ninguno":
         mask = np.ones((img.height, img.width), dtype=np.float32)
     else:
-        mask = proc.segment(img, model_key)
+        mask, info = proc.segment_detail(img, model_key, objects=objects)
     Image.fromarray((np.clip(mask, 0, 1) * 255).astype(np.uint8)).save(folder / "mascara.png")
     cut = proc.cutout(img, mask)
     cut.save(folder / "recorte.png")
-    cover = float((mask > 0.5).mean())
-    store.update_meta(pid, recorte={"modelo": model_key, "cobertura": round(cover, 3), "tamano": list(cut.size)})
-    return {"cobertura": round(cover, 3), "modelo": model_key}
+    quality = proc.mask_quality(mask, info) if model_key != "ninguno" else {"nota": 100, "calidad": "completa", "objetos": 1, "avisos": []}
+    result = {"modelo": model_key, "cobertura": round(float((mask > 0.5).mean()), 3), "tamano": list(cut.size), **info, **quality}
+    result.pop("pixeles", None)
+    store.update_meta(pid, recorte=result)
+    return result
 
 
 def _next_version(store: ProjectStore, pid: str, form: str) -> tuple[str, Path]:
@@ -97,21 +105,35 @@ def _next_version(store: ProjectStore, pid: str, form: str) -> tuple[str, Path]:
     return name, path
 
 
-def _prepare_figure(mesh: trimesh.Trimesh, opts: dict, job: Job) -> tuple[list[trimesh.Trimesh], list[str]]:
+def _prepare_figure(mesh: trimesh.Trimesh, opts: dict, src: forms.Source) -> tuple[list[forms.Part], list[str]]:
     notes: list[str] = []
     pr.place_on_bed(mesh)
     pr.scale_to(mesh, float(opts.get("tamano_mm") or 100), opts.get("eje", "alto"))
-    pr.rotate_z(mesh, float(opts.get("rotacion_z") or 0))
     pr.place_on_bed(mesh)
     flatten = float(opts.get("aplanar_mm", 1.0) or 0)
     if flatten > 0 and mesh.is_volume:
         mesh = pr.flatten_bottom(mesh, flatten)
         notes.append(f"Aplané {flatten:.1f} mm abajo para que pegue a la cama.")
     base = opts.get("base", "ninguna")
+    base_top = None
     if base in ("disco", "rectangular") and mesh.is_volume:
-        mesh = pr.add_base(mesh, base, float(opts.get("base_mm") or 3))
-        notes.append(f"Base {base} de {float(opts.get('base_mm') or 3):.0f} mm.")
-    return [mesh], notes
+        base_mm = float(opts.get("base_mm") or 3)
+        mesh = pr.add_base(mesh, base, base_mm)
+        base_top = base_mm + 0.05
+        notes.append(f"Base {base} de {base_mm:.0f} mm.")
+    vertex_colors = None
+    if opts.get("color", True):
+        # se pinta mientras la figura todavía mira al frente (antes de girarla)
+        try:
+            body = mesh.vertices if base_top is None else mesh.vertices[mesh.vertices[:, 2] >= base_top]
+            frame = paint.fit_frame(body, src.cut_mask)
+            vertex_colors = paint.project_colors(mesh, src.cut, frame, base_top)
+            notes.append("Pinté la figura con los colores de la foto; la espalda toma un promedio del frente.")
+        except Exception as exc:
+            notes.append(f"No pude pasarle los colores de la foto: {exc}")
+    pr.rotate_z(mesh, float(opts.get("rotacion_z") or 0))
+    pr.place_on_bed(mesh)
+    return [forms.Part("figura", mesh, vertex_colors=vertex_colors)], notes
 
 
 def _maybe_split(parts: list[forms.Part], settings: Settings, opts: dict) -> tuple[list[forms.Part], list[str]]:
@@ -122,8 +144,13 @@ def _maybe_split(parts: list[forms.Part], settings: Settings, opts: dict) -> tup
         return parts, []
     if not mesh.is_volume:
         return parts, ["No pude dividirla porque la malla no es un volumen cerrado."]
-    pieces = pr.split_for_bed(mesh, bed)
-    out = [forms.Part(f"parte_{i + 1}", m, parts[0].color) for i, m in enumerate(pieces)]
+    pieces, offsets = pr.split_for_bed(mesh, bed, with_offsets=True)
+    colors = parts[0].vertex_colors
+    tree = cKDTree(mesh.vertices) if colors is not None else None
+    out = []
+    for i, (m, off) in enumerate(zip(pieces, offsets)):
+        vc = colors[tree.query(m.vertices - off)[1]] if tree is not None else None  # colores del vértice original más cercano
+        out.append(forms.Part(f"parte_{i + 1}", m, parts[0].color, vertex_colors=vc))
     return out, [f"Dividida en {len(out)} partes para que quepan en la cama ({bed[0]:.0f}×{bed[1]:.0f}×{bed[2]:.0f} mm)."]
 
 
@@ -160,15 +187,18 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
 
         job.start("reparar")
         if opts.get("reparar", True):
-            mesh, log = pr.repair(mesh, voxel_res=int(opts.get("voxeles", 256)))
+            mesh, log = pr.repair(mesh, voxel_res=int(opts.get("voxeles", 384)))
             notes += log
-        mesh = pr.simplify(mesh, int(opts.get("caras_max", 250_000)))
+        level = opts.get("pulido", "suave")
+        if level in ("suave", "fuerte"):
+            pr.polish(mesh, level)
+            notes.append(f"Pulido {level} de la superficie (Taubin, sin encoger la pieza).")
+        mesh = pr.simplify(mesh, int(opts.get("caras_max", 500_000)))
         job.done("reparar")
 
         job.start("imprimir")
-        meshes, more = _prepare_figure(mesh, opts, job)
+        parts, more = _prepare_figure(mesh, opts, src)
         notes += more
-        parts = [forms.Part("figura", m) for m in meshes]
     else:
         job.start("profundidad")
         if form in USES_DEPTH and params.get("fuente", "profundidad") == "profundidad":

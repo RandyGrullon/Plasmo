@@ -314,8 +314,21 @@ def add_base(mesh: trimesh.Trimesh, kind: str = "disco", height_mm: float = 3.0,
     return place_on_bed(from_manifold(joined))
 
 
-def split_for_bed(mesh: trimesh.Trimesh, bed: tuple[float, float, float], margin_mm: float = 4.0, gap_mm: float = 8.0) -> list[trimesh.Trimesh]:
-    """Corta en partes iguales por cada eje que no quepa en la cama."""
+def polish(mesh: trimesh.Trimesh, level: str = "suave") -> trimesh.Trimesh:
+    """Pulido de superficie (Taubin): quita el escalonado de la malla sin encogerla."""
+    iterations = {"suave": 6, "fuerte": 20}.get(level, 0)
+    if iterations and len(mesh.faces):
+        trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=0.53, iterations=iterations)
+    return mesh
+
+
+def split_for_bed(mesh: trimesh.Trimesh, bed: tuple[float, float, float], margin_mm: float = 4.0, gap_mm: float = 8.0,
+                  with_offsets: bool = False):
+    """Corta en partes iguales por cada eje que no quepa en la cama.
+
+    Con `with_offsets` devuelve también cuánto se movió cada parte (para
+    llevarle los colores de la figura original).
+    """
     pieces = [to_manifold(mesh)]
     lo, hi = mesh.bounds
     for axis in range(3):
@@ -338,10 +351,12 @@ def split_for_bed(mesh: trimesh.Trimesh, bed: tuple[float, float, float], margin
             if not rest.is_empty():
                 new.append(rest)
         pieces = new
-    out = []
+    out, origins = [], []
     x = 0.0
     for piece in pieces:
-        m = place_on_bed(from_manifold(piece))
+        m = from_manifold(piece)
+        origins.append(m.vertices[0].copy())
+        place_on_bed(m)
         m.apply_translation([x + m.extents[0] / 2, 0, 0])
         x += m.extents[0] + gap_mm
         out.append(m)
@@ -349,4 +364,6 @@ def split_for_bed(mesh: trimesh.Trimesh, bed: tuple[float, float, float], margin
         shift = -x / 2 + gap_mm / 2
         for m in out:
             m.apply_translation([shift, 0, 0])
+    if with_offsets:
+        return out, [m.vertices[0] - o for m, o in zip(out, origins)]
     return out

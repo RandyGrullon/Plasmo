@@ -23,10 +23,12 @@ FUENTE = choice("fuente", "Relieve desde", "profundidad", [["profundidad", "Prof
                 "Profundidad usa Depth Anything V2; luz y sombra sirve para dibujos planos.")
 RELIEF_COMMON = [
     FUENTE,
+    num("detalle", "Detalle fino", 0.35, 0, 1, 0.05, "", "Suma ojos, bordes y texturas de la foto al relieve."),
+    num("bisel_mm", "Bisel del borde", 0.8, 0, 3, 0.1, "mm", "Baja el relieve suave hacia el borde en vez de cortarlo a pico."),
     flag("invertir", "Invertir relieve", False),
     choice("curva", "Curva", "linear", [["linear", "Lineal"], ["gamma", "Gamma"], ["s-curve", "Curva S"]]),
     num("gamma", "Gamma", 1.0, 0.2, 3.0, 0.1, ""),
-    num("suavizado", "Suavizado", 1.0, 0, 5, 0.1, "px"),
+    num("suavizado", "Suavizado", 0.6, 0, 5, 0.1, "px"),
 ]
 
 FORMS = [
@@ -36,15 +38,19 @@ FORMS = [
         "descripcion": "Modelo completo generado por IA con Hunyuan3D. Para personajes, mascotas, juguetes y objetos.",
         "requiere": "generador",
         "parametros": [
-            choice("octree", "Detalle de la malla", 256, [[192, "Rápido"], [256, "Normal"], [384, "Alto"], [512, "Máximo (lento)"]]),
+            choice("calidad", "Calidad", "maxima", [["maxima", "Máxima (más lenta)"], ["alta", "Alta"], ["rapida", "Rápida"]],
+                   "Máxima: malla de 512 y 50 pasos. Tarda más, pero se parece más a la foto."),
             choice("algoritmo", "Superficie", "suave", [["suave", "Suave (surface net)"], ["rapido", "Rápida (escalonada)"]]),
-            num("pasos", "Pasos de muestreo", 0, 0, 60, 1, "", "0 = el del modelo (2.1: 30 · 2.0: 20)"),
+            num("pasos", "Pasos de muestreo", 0, 0, 80, 1, "", "0 = según la calidad"),
             num("guia", "Guía (CFG)", 0, 0, 12, 0.5, "", "0 = la del modelo (2.1: 5 · 2.0: 8)"),
             num("semilla", "Semilla", 0, 0, 2**31 - 1, 1, "", "0 = aleatoria"),
         ],
         "impresion": [
             num("tamano_mm", "Tamaño", 100, 10, 300, 1),
             choice("eje", "Medido por", "alto", [["alto", "Altura"], ["largo", "Lado más largo"]]),
+            flag("color", "Colores de la foto", True, "Pinta la figura con los colores de la imagen (vista previa y OBJ a color)."),
+            choice("pulido", "Pulido de superficie", "suave", [["ninguno", "Ninguno"], ["suave", "Suave"], ["fuerte", "Fuerte"]],
+                   "Quita el escalonado de la malla sin encoger la pieza."),
             choice("base", "Base", "ninguna", [["ninguna", "Sin base"], ["disco", "Disco"], ["rectangular", "Rectangular"]]),
             num("base_mm", "Alto de la base", 3, 1, 10, 0.5),
             num("aplanar_mm", "Aplanar abajo", 1.0, 0, 6, 0.1, "mm", "Corta una rebanada para que pegue a la cama."),

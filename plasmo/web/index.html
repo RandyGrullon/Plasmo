@@ -72,14 +72,20 @@
             <div class="image-box"><img id="img-preview" alt=""></div>
             <div class="row" style="margin-top:10px">
               <select id="cut-model" class="grow" title="Cómo separar el sujeto del fondo">
-                <option value="isnet-general-use">Quitar fondo: IS-Net</option>
-                <option value="birefnet-lite">Quitar fondo: BiRefNet</option>
-                <option value="u2netp">Quitar fondo: rápido</option>
-                <option value="simple">Quitar fondo: por color</option>
-                <option value="ninguno">Usar la imagen completa</option>
+                <option value="auto">Máxima calidad</option>
+                <option value="isnet-general-use">IS-Net</option>
+                <option value="birefnet-lite">BiRefNet</option>
+                <option value="u2netp">Rápido</option>
+                <option value="simple">Por color</option>
+                <option value="ninguno">Imagen completa</option>
               </select>
-              <button class="sm" id="btn-recut" data-icon="refresh">Recortar</button>
+              <select id="cut-objects" title="¿Todo lo que se detecte o solo el protagonista?">
+                <option value="todos">Todos los objetos</option>
+                <option value="principal">Solo el principal</option>
+              </select>
+              <button class="sm" id="btn-recut" data-icon="refresh" title="Recortar de nuevo" aria-label="Recortar de nuevo"></button>
             </div>
+            <div class="cut-quality hidden" id="cut-quality"></div>
           </div>
 
           <div class="card analysis" id="card-analysis">

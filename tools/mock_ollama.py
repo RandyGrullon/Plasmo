@@ -32,6 +32,9 @@ ANALYSIS = {
     "material": "PLA",
     "nombre_archivo": "Muñeco Gato",
     "consejos": ["Imprime a 0.12 mm de capa para las orejas.", "Usa soportes en árbol solo bajo la cabeza."],
+    "objetos": ["gato de juguete", "orejas", "panza", "piernas"],
+    "recorte_completo": True,
+    "recorte_comentario": "El recorte incluye todo el personaje.",
 }
 
 

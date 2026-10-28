@@ -42,7 +42,7 @@ class Settings:
     comfy_checkpoint: str = "hunyuan_3d_v2.1.safetensors"
     comfy_t2i_checkpoint: str = ""
     hunyuan_api_url: str = "http://127.0.0.1:8081"
-    bg_model: str = "isnet-general-use"
+    bg_model: str = "auto"  # máxima calidad: IS-Net + BiRefNet combinados
     depth_model: str = "depth-anything-v2-small"
     output_dir: str = str(DEFAULT_OUTPUT)
     tutorial_visto: bool = False

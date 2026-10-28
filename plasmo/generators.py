@@ -59,13 +59,18 @@ def png_bytes(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+# calidad → (detalle de la malla, multiplicador de pasos sobre la plantilla oficial)
+QUALITY = {"maxima": (512, 5 / 3), "alta": (384, 4 / 3), "rapida": (256, 1.0)}
+
+
 def hunyuan_workflow(image_name: str, checkpoint: str, params: dict) -> dict:
     """Grafo en formato API: imagen → Hunyuan3D (solo forma) → GLB."""
     preset = preset_for(checkpoint)
-    steps = int(params.get("pasos") or 0) or preset["steps"]
+    octree_q, steps_mult = QUALITY.get(params.get("calidad", "maxima"), QUALITY["maxima"])
+    steps = int(params.get("pasos") or 0) or round(preset["steps"] * steps_mult)
     cfg = float(params.get("guia") or 0) or preset["cfg"]
     seed = int(params.get("semilla") or 0) or random.randint(1, 2**31 - 1)
-    octree = int(params.get("octree") or 256)
+    octree = int(params.get("octree") or 0) or octree_q
     algorithm = "basic" if params.get("algoritmo") == "rapido" else "surface net"
     return {
         "1": {"class_type": "ImageOnlyCheckpointLoader", "inputs": {"ckpt_name": checkpoint}},
@@ -322,7 +327,7 @@ class HunyuanApiGenerator:
         payload = {
             "image": base64.b64encode(png_bytes(image)).decode("ascii"),
             "seed": int(params.get("semilla") or 0) or random.randint(1, 2**31 - 1),
-            "octree_resolution": int(params.get("octree") or 256),
+            "octree_resolution": int(params.get("octree") or 0) or QUALITY.get(params.get("calidad", "maxima"), QUALITY["maxima"])[0],
             "num_inference_steps": int(params.get("pasos") or 0) or 5,
             "guidance_scale": float(params.get("guia") or 0) or 5.0,
             "texture": False,

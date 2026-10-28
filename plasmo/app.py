@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from PIL import Image
 
 from plasmo import __version__, catalog, generators, pipeline
@@ -134,7 +135,8 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
 
     @app.post("/api/proyectos")
     async def crear(imagen: UploadFile = File(...), recorte: str = Form("")):
-        return new_project(await imagen.read(), imagen.filename or "imagen", recorte)
+        # el recorte de máxima calidad tarda: en un hilo aparte para no congelar el servidor
+        return await run_in_threadpool(new_project, await imagen.read(), imagen.filename or "imagen", recorte)
 
     @app.post("/api/ejemplo")
     def ejemplo():
@@ -152,7 +154,8 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
     async def recortar(pid: str, request: Request):
         body = await request.json()
         try:
-            return pipeline.segment_project(store(), pid, body.get("modelo") or settings().bg_model)
+            objects = "principal" if body.get("objetos") == "principal" else "todos"
+            return await run_in_threadpool(pipeline.segment_project, store(), pid, body.get("modelo") or settings().bg_model, objects)
         except KeyError:
             raise HTTPException(404, "Proyecto no encontrado")
 
@@ -189,8 +192,10 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
 
         def work(job):
             job.start("analizar_ia", f"{s.vision_model} está mirando la foto…")
-            img = Image.open(folder / "recorte.png") if (folder / "recorte.png").exists() else Image.open(folder / "original.png")
-            result = ollama().analyze_image(s.vision_model, img)
+            original = Image.open(folder / "original.png")
+            cut = Image.open(folder / "recorte.png") if (folder / "recorte.png").exists() else None
+            # ve la foto entera (todo lo que hay) y el recorte, para avisar si le falta algo
+            result = ollama().analyze_image(s.vision_model, original, cut)
             job.done("analizar_ia")
             store().update_meta(pid, analisis=result)
             return {"analisis": result}

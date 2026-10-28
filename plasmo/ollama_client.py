@@ -38,10 +38,14 @@ ANALYSIS_SCHEMA = {
         "material": {"type": "string"},
         "nombre_archivo": {"type": "string"},
         "consejos": {"type": "array", "items": {"type": "string"}},
+        "objetos": {"type": "array", "items": {"type": "string"}},
+        "recorte_completo": {"type": "boolean"},
+        "recorte_comentario": {"type": "string"},
     },
     "required": [
         "descripcion", "sujeto", "apta_para_figura", "problemas", "forma_recomendada", "por_que",
         "tamano_mm", "orientacion", "soportes", "material", "nombre_archivo", "consejos",
+        "objetos", "recorte_completo", "recorte_comentario",
     ],
 }
 
@@ -57,7 +61,17 @@ Formas disponibles:
 - cortador: cortador de galletas con la silueta (formas simples y cerradas).
 Da medidas en milímetros pensando en una impresora FDM con cama de 256 mm."""
 
-ANALYSIS_PROMPT = "Analiza esta imagen para imprimirla en 3D. Esquema JSON a cumplir:\n" + json.dumps(ANALYSIS_SCHEMA, ensure_ascii=False)
+ANALYSIS_PROMPT = (
+    "Analiza esta imagen para imprimirla en 3D. Mira con detalle y lista en «objetos» TODO lo que ves "
+    "(personajes, accesorios, objetos que sostiene, detalles), del más importante al menos importante.\n"
+    "Esquema JSON a cumplir:\n" + json.dumps(ANALYSIS_SCHEMA, ensure_ascii=False)
+)
+ANALYSIS_PROMPT_CUT = (
+    "Imagen 1: la foto original. Imagen 2: el recorte que hizo Plasmo del sujeto (fondo eliminado, sobre blanco).\n"
+    "Compara las dos: si al recorte le falta algo del sujeto (una oreja, una mano, un objeto que sostiene, la cola) "
+    "o se coló parte del fondo, pon recorte_completo=false y explica en recorte_comentario qué falta o sobra; si está bien, "
+    "recorte_completo=true.\n" + ANALYSIS_PROMPT
+)
 
 CHAT_SYSTEM = """Eres el asistente de Plasmo, experto en impresión 3D (FDM y resina), slicers (Bambu Studio, OrcaSlicer, Cura, PrusaSlicer),
 materiales y modelado. Responde en español dominicano neutro, claro y breve, con pasos concretos y valores numéricos.
@@ -202,14 +216,16 @@ class OllamaClient:
                     yield piece
 
     # --------------------------------------------------------- tareas Plasmo
-    def analyze_image(self, model: str, img: Image.Image) -> dict:
+    def analyze_image(self, model: str, img: Image.Image, cut: Image.Image | None = None) -> dict:
+        """Analiza la foto; si se pasa el recorte, además revisa que no le falte nada."""
         caps = self.capabilities(model)
         if "vision" not in caps:
             raise OllamaError(f"{model} no ve imágenes; usa uno con visión, por ejemplo qwen3.5:9b.")
-        messages = [
-            {"role": "system", "content": ANALYSIS_SYSTEM},
-            {"role": "user", "content": ANALYSIS_PROMPT, "images": [image_b64(img)]},
-        ]
+        if cut is not None:
+            user = {"role": "user", "content": ANALYSIS_PROMPT_CUT, "images": [image_b64(img, 1280), image_b64(cut, 1024)]}
+        else:
+            user = {"role": "user", "content": ANALYSIS_PROMPT, "images": [image_b64(img, 1280)]}
+        messages = [{"role": "system", "content": ANALYSIS_SYSTEM}, user]
         raw = self.chat(model, messages, fmt=ANALYSIS_SCHEMA, temperature=0.2)
         return normalize_analysis(_loads(raw))
 
@@ -276,4 +292,7 @@ def normalize_analysis(data: dict) -> dict:
         "material": str(data.get("material") or "PLA").strip(),
         "nombre_archivo": slug(str(data.get("nombre_archivo") or data.get("sujeto") or "modelo")),
         "consejos": [str(c) for c in (data.get("consejos") or [])][:6],
+        "objetos": [str(o).strip() for o in (data.get("objetos") or []) if str(o).strip()][:12],
+        "recorte_completo": data.get("recorte_completo") is not False,
+        "recorte_comentario": str(data.get("recorte_comentario") or "").strip(),
     }

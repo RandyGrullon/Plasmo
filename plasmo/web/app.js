@@ -252,11 +252,40 @@ async function createProject(file) {
   }
 }
 
+let cutTimer = null;
 function setCutting(on, label = "") {
   const box = $(".image-box");
   box.classList.toggle("cutting", on);
   box.querySelector(".box-label")?.remove();
-  if (on) box.insertAdjacentHTML("beforeend", `<div class="box-label"><span class="spinner"></span>${esc(label)}</div>`);
+  clearInterval(cutTimer);
+  if (!on) return;
+  box.insertAdjacentHTML("beforeend", `<div class="box-label"><span class="spinner"></span><span>${esc(label)}</span><span class="muted"></span></div>`);
+  const started = Date.now();
+  // el recorte de máxima calidad tarda: se muestran los segundos para que no parezca colgado
+  cutTimer = setInterval(() => {
+    const el = box.querySelector(".box-label .muted");
+    if (el) el.textContent = `${Math.round((Date.now() - started) / 1000)} s`;
+  }, 1000);
+}
+
+const CUT_NAMES = { auto: "máxima calidad", "isnet-general-use": "IS-Net", "birefnet-lite": "BiRefNet", u2netp: "U2-Net", simple: "por color", ninguno: "imagen completa" };
+
+function renderCutQuality() {
+  const box = $("#cut-quality");
+  const r = state.project?.recorte;
+  const a = state.project?.analisis;
+  if (!r || r.nota == null) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  const objetos = r.objetos > 1 ? ` · ${r.objetos} objetos` : "";
+  const alert = a && a.recorte_completo === false
+    ? `<div class="q-alert"><b>La IA dice que al recorte le falta algo:</b> ${esc(a.recorte_comentario || "revisa el recorte")}
+        ${r.modelo !== "auto" ? `<div style="margin-top:6px"><button class="sm" id="q-max">Recortar con máxima calidad</button></div>` : ""}</div>`
+    : "";
+  box.innerHTML = `
+    <div class="q-head q-${esc(r.calidad)}"><span>Recorte <b>${esc(r.calidad)}</b> · ${esc(CUT_NAMES[r.modelo] || r.modelo)}${objetos}</span>
+      <span class="q-meter"><i style="width:${Math.max(4, r.nota)}%"></i></span><span class="muted">${r.nota}/100</span></div>
+    ${(r.avisos || []).length ? `<ul>${r.avisos.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : ""}${alert}`;
+  $("#q-max")?.addEventListener("click", () => { $("#cut-model").value = "auto"; $("#btn-recut").click(); });
 }
 
 function showWorkspace() {
@@ -285,7 +314,9 @@ async function openProject(pid, { reveal = false } = {}) {
   $$(".project").forEach((el) => el.classList.toggle("active", el.dataset.id === pid));
   renderImage(reveal);
   if (meta.recorte?.modelo) $("#cut-model").value = meta.recorte.modelo;
+  $("#cut-objects").value = meta.recorte?.objetos_modo === "principal" ? "principal" : "todos";
   renderAnalysis(meta.analisis);
+  renderCutQuality();
   const versions = meta.versiones || [];
   const last = versions[versions.length - 1];
   selectForm(last?.forma || meta.analisis?.forma_recomendada || state.form || "relieve", last);
@@ -333,6 +364,7 @@ function renderAnalysis(a) {
       <span class="chip">${esc(a.material)}</span>
       ${a.problemas.map((p) => `<span class="chip warn">${esc(PROBLEMS[p] || p)}</span>`).join("")}
     </div>
+    ${(a.objetos || []).length ? `<div class="chips"><span class="chip">Ve:</span>${a.objetos.map((o) => `<span class="chip">${esc(o)}</span>`).join("")}</div>` : ""}
     ${a.por_que ? `<p class="muted small">${esc(a.por_que)}</p>` : ""}
     ${a.consejos.length ? `<ul class="tips">${a.consejos.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}`;
   renderForms();
@@ -351,6 +383,7 @@ async function analyze() {
     const res = await pollQuiet(job.id);
     state.project.analisis = res.analisis;
     renderAnalysis(res.analisis);
+    renderCutQuality();
     if (!(state.project.versiones || []).length) {
       selectForm(res.analisis.forma_recomendada);
       applyRecommendedSize(res.analisis);
@@ -528,7 +561,7 @@ function renderReport(v) {
       ${r.nota_paredes ? `<li class="nota">${esc(r.nota_paredes)}</li>` : ""}
     </ul>
     <div class="exports">
-      ${dl("3mf", "3MF")}${dl("stl", "STL")}${dl("obj", "OBJ")}${dl("zip", "Piezas (ZIP)")}
+      ${dl("3mf", "3MF")}${dl("stl", "STL")}${dl("obj", "OBJ")}${dl("obj_color", "OBJ a color")}${dl("zip", "Piezas (ZIP)")}
       <button class="sm" id="open-slicer" data-icon="slicer">Abrir en el slicer</button>
       <button class="sm" id="open-folder" data-icon="folder">Abrir carpeta</button>
     </div>`;
@@ -638,7 +671,7 @@ async function openSettings() {
       <h3>Recorte y profundidad (corren en CPU)</h3>
       <div class="grid2">
         <div class="field"><label>Quitar fondo con</label><select id="s-bg">
-          ${[["isnet-general-use", "IS-Net (recomendado)"], ["birefnet-lite", "BiRefNet lite"], ["u2netp", "U2-Net P (rápido)"], ["simple", "Por color (sin modelo)"]]
+          ${[["auto", "Máxima calidad: IS-Net + BiRefNet (recomendado)"], ["isnet-general-use", "IS-Net"], ["birefnet-lite", "BiRefNet lite"], ["u2netp", "U2-Net P (rápido)"], ["simple", "Por color (sin modelo)"]]
             .map(([k, l]) => `<option value="${k}" ${cfg.bg_model === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
         <div class="field"><label>Profundidad para relieves</label><select id="s-depth">
           <option value="depth-anything-v2-small" ${cfg.depth_model === "depth-anything-v2-small" ? "selected" : ""}>Depth Anything V2 Small</option>
@@ -836,7 +869,7 @@ function buildTourSteps() {
     },
     {
       target: () => $(".col-left .card"), placement: "right", title: "El recorte",
-      text: `<p>Plasmo separó al gatito del fondo con IS-Net, en tu CPU.</p><p>Si el recorte no quedó bien, cambia el método abajo y pulsa <b>Recortar</b>. Con <b>Original</b> ves la foto entera.</p>`,
+      text: `<p>Plasmo separó al gatito del fondo combinando dos modelos (IS-Net y BiRefNet), en tu CPU. Debajo ves la <b>nota del recorte</b> y sus avisos.</p><p>Si algo quedó mal, cambia el método y pulsa <b>Recortar</b>. Con <b>Original</b> ves la foto entera.</p>`,
     },
     {
       target: "#card-analysis", placement: "right", title: "Lo que ve la IA",
@@ -952,11 +985,12 @@ function bind() {
     btn.disabled = true;
     setCutting(true, "Recortando de nuevo…");
     try {
-      await api(`/api/proyectos/${encodeURIComponent(state.project.id)}/recorte`, { method: "POST", body: { modelo: $("#cut-model").value } });
+      await api(`/api/proyectos/${encodeURIComponent(state.project.id)}/recorte`, { method: "POST", body: { modelo: $("#cut-model").value, objetos: $("#cut-objects").value } });
       state.project = await api(`/api/proyectos/${encodeURIComponent(state.project.id)}`);
       state.imgView = "recorte";
       setCutting(false);
       renderImage(true);
+      renderCutQuality();
       loadProjects();
     } catch (e) { toast(e.message, "err"); } finally { setCutting(false); btn.disabled = false; }
   });

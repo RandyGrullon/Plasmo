@@ -70,12 +70,33 @@ def combined(parts: list[Part]) -> trimesh.Trimesh:
     return trimesh.util.concatenate([p.mesh for p in parts]) if len(parts) > 1 else parts[0].mesh
 
 
+def _painted(p: Part) -> trimesh.Trimesh:
+    """Copia de la pieza con sus colores: los de la foto si los tiene, si no su color plano."""
+    mesh = p.mesh.copy()
+    if p.vertex_colors is not None and len(p.vertex_colors) == len(mesh.vertices):
+        rgba = np.column_stack([p.vertex_colors, np.full(len(mesh.vertices), 255, np.uint8)])
+        mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=rgba)
+    else:
+        mesh.visual = trimesh.visual.ColorVisuals(mesh, face_colors=np.array([*p.color, 255], dtype=np.uint8))
+    return mesh
+
+
+def colored_obj(parts: list[Part]) -> str:
+    """OBJ con color por vértice: Bambu Studio y OrcaSlicer lo convierten a filamentos."""
+    meshes = []
+    for p in parts:
+        mesh = _painted(p)
+        if p.vertex_colors is None:
+            mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.tile([*p.color, 255], (len(mesh.vertices), 1)).astype(np.uint8))
+        meshes.append(mesh)
+    mesh = trimesh.util.concatenate(meshes) if len(meshes) > 1 else meshes[0]
+    return trimesh.exchange.obj.export_obj(mesh, include_color=True, include_normals=False, include_texture=False)
+
+
 def preview_glb(parts: list[Part]) -> bytes:
     scene = trimesh.Scene()
     for p in parts:
-        mesh = p.mesh.copy()
-        mesh.visual = trimesh.visual.ColorVisuals(mesh, face_colors=np.array([*p.color, 255], dtype=np.uint8))
-        scene.add_geometry(mesh, node_name=p.name, geom_name=p.name)
+        scene.add_geometry(_painted(p), node_name=p.name, geom_name=p.name)
     # el visor usa Y arriba (glTF); las piezas están en Z arriba
     scene.apply_transform(trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0]))
     return scene.export(file_type="glb")
@@ -92,6 +113,9 @@ def write_all(parts: list[Part], folder: Path, stem: str, title: str) -> dict[st
     files["3mf"] = f"{stem}.3mf"
     (folder / f"{stem}.obj").write_text(mesh.export(file_type="obj"), encoding="utf-8")
     files["obj"] = f"{stem}.obj"
+    if any(p.vertex_colors is not None for p in parts):
+        (folder / f"{stem}-color.obj").write_text(colored_obj(parts), encoding="utf-8")
+        files["obj_color"] = f"{stem}-color.obj"
     if len(parts) > 1:
         with zipfile.ZipFile(folder / f"{stem}-piezas.zip", "w", zipfile.ZIP_DEFLATED) as z:
             for p in parts:
