@@ -32,6 +32,7 @@ Sube una imagen y recibe una pieza lista para el slicer. Funciona 100 % en tu PC
 - [Inicio rápido](#inicio-rápido)
 - [Requisitos](#requisitos)
 - [Cómo funciona](#cómo-funciona)
+- [Calidad medida](#calidad-medida)
 - [Formas de impresión](#formas-de-impresión)
 - [Modelos de IA](#modelos-de-ia)
 - [Configuración](#configuración)
@@ -55,11 +56,14 @@ Es una alternativa personal y gratuita a [Meshy](https://www.meshy.ai/), pensada
 | | |
 |---|---|
 | 🧠 **Ve la foto** | Ollama (`qwen3.5:9b`) describe la imagen y sugiere la forma, el tamaño, los soportes y el material, con respuesta JSON validada. |
-| 🗿 **Figura 3D con IA** | Hunyuan3D 2.1 en ComfyUI. Plasmo arma el grafo y sigue el progreso paso a paso por WebSocket. |
+| 🗿 **Figura 3D con IA** | Hunyuan3D 2.1 en ComfyUI con calidad **Máxima** por defecto (malla de 512 y 50 pasos). Plasmo arma el grafo y sigue el progreso paso a paso por WebSocket. |
+| 🎨 **Igual a la foto, también en color** | Proyecta los colores de la foto sobre la figura, alineando la silueta de la malla con la del recorte. La espalda toma el color de cada zona sin los rasgos del frente. Sale en la vista previa y en un **OBJ a color** que Bambu Studio y OrcaSlicer pasan a filamentos. |
 | 🖼️ **Seis formas sin GPU** | Relieve, litofanía (plana, curva o lámpara), llavero, imán, pixel art multicolor y cortador. Salen de un generador de sólidos que siempre da mallas cerradas. |
-| ✂️ **Recorte y profundidad** | IS-Net, BiRefNet o U2-Net quitan el fondo, y Depth Anything V2 calcula la profundidad para los relieves. Todo corre en CPU con ONNX. |
+| ✂️ **Detecta todo el sujeto** | Combina IS-Net y BiRefNet, cada uno con doble pasada (foto y espejo), sin deformar la proporción. Un filtro guiado por los colores de la foto ajusta los bordes, conserva **todos** los objetos (solo quita motas) y borra el halo del fondo. Da una nota de calidad con avisos ("puede estar cortado", "detecté 2 objetos"). |
+| 🔍 **La IA revisa el recorte** | Ollama compara la foto con el recorte, lista todo lo que ve y avisa si falta algo (una oreja, una mano, un objeto que sostiene). |
+| ⛰️ **Relieves con detalle** | Depth Anything V2 lee la foto real con su proporción y doble pasada, sin ruido. Suma el detalle fino (ojos, texturas) y termina el borde con un bisel suave. Todo corre en CPU con ONNX. |
 | 🔍 **Revisión de imprimibilidad** | Malla cerrada, aristas no manifold, agujeros, paredes finas, voladizos sin apoyo, estabilidad, si cabe en la cama y peso estimado. |
-| 🛠️ **Preparación** | Reparación (incluida una rehecha por vóxeles), simplificación, escala en mm, aplanado, pedestal y corte en partes si no cabe. |
+| 🛠️ **Preparación y pulido** | Reparación (incluida una rehecha por vóxeles), pulido de superficie que no encoge la pieza, contornos sin escalones, escala en mm, aplanado, pedestal y corte en partes si no cabe. Los objetos sueltos se unen con un puente para imprimir una sola pieza. |
 | 📦 **Exportación** | STL, 3MF multipieza con colores (listo para AMS/MMU), OBJ y ZIP de piezas, más un botón para abrirla en tu slicer. |
 | ⏻ **Encender la IA con un clic** | El botón **Encender IA** arranca Ollama y ComfyUI sin abrir consolas. Encuentra solo la app de Ollama y ComfyUI (portable, con git o Desktop), muestra en qué etapa van y puede encenderlos al abrir Plasmo. |
 | 💬 **Asistente** | Chat por streaming que conoce la pieza abierta: temperaturas, soportes y ajustes del slicer. |
@@ -75,11 +79,11 @@ Es una alternativa personal y gratuita a [Meshy](https://www.meshy.ai/), pensada
   </tr>
   <tr>
     <td><img src="docs/img/pixel-art.png" alt="Pixel art multicolor del gatito con su reporte de imprimibilidad"><br><sub><b>Pixel art multicolor.</b> Cada color es una pieza del 3MF.</sub></td>
-    <td><img src="docs/img/portada.png" alt="Pantalla de inicio de Plasmo"><br><sub><b>Inicio.</b> Arrastra una foto, pégala o describe tu idea.</sub></td>
+    <td><img src="docs/img/figura-color.png" alt="Recorte excelente del gatito completo y figura pintada con los colores de la foto"><br><sub><b>Detecta todo y pinta como la foto.</b> Recorte del sujeto entero con su nota, y la figura con los colores de la imagen.</sub></td>
   </tr>
 </table>
 
-<sub>Capturas tomadas en el modo demo, con Ollama y ComfyUI simulados.</sub>
+<sub>Capturas tomadas en el modo demo, con Ollama y ComfyUI simulados: la forma de la figura es la del simulador; en tu PC la hace Hunyuan3D.</sub>
 
 ## Inicio rápido
 
@@ -141,6 +145,22 @@ flowchart LR
 - **La VRAM se reparte.** Antes de generar la figura, Plasmo descarga el modelo de Ollama (`keep_alive: 0`). Al terminar, le pide a ComfyUI que libere la suya (`POST /free`). Así los 12 GB alcanzan para todo.
 - **Mallas cerradas por construcción.** Las formas sin IA salen de columnas por píxel que comparten vértices, con paredes solo en el borde. No hacen falta booleanas, y los contactos por esquina se resuelven sin abrir la malla.
 
+## Calidad medida
+
+El recorte se mide con `tools/banco_recorte.py` sobre 20 fotos sintéticas difíciles, con su máscara real: fondos lisos, en degradado, del mismo tono que el sujeto, oscuros y mesas con objetos. Hay sombras y compresión JPEG, partes finas y agujeros, y casos de dos objetos separados. También se mide con el gatito del tutorial.
+
+| | Antes (IS-Net) | **Ahora: máxima calidad** |
+|---|---|---|
+| Fotos normales (16): coincidencia con la máscara real (IoU) | 0,977 | **0,997** |
+| Peor foto | 0,883 | **0,991** |
+| Precisión del borde (F1, tolerancia 2 px) | 0,960 | **0,997** |
+| Objetos que se perdían | 1 | **0** |
+| Gatito del tutorial (IoU) | 0,433: solo la cabeza | **0,977**: el gatito entero |
+
+En una mesa con otros objetos, "Todos los objetos" también se los queda, porque detecta todo. Para esas fotos está **"Solo el principal"**, que sube de 0,69 a 0,81 de IoU.
+
+La máxima calidad tarda más: en la CPU, el recorte toma unos 30–50 s y la profundidad unos 20 s. La figura con Hunyuan3D en calidad Máxima tarda más que en Rápida. Es a propósito: la prioridad es que la pieza se parezca a la foto.
+
 ## Formas de impresión
 
 | Forma | Qué sale | Parámetros clave | Ideal para |
@@ -159,7 +179,7 @@ flowchart LR
 |---|---|---|---|---|
 | Análisis y chat | `qwen3.5:9b` (alternativas: `qwen3.5:4b`, `gemma4:12b`) | 6.6 GB | Ollama · GPU | Ver su página en ollama.com |
 | Figura 3D | Hunyuan3D 2.1 (respaldo: 2.0) | 7.4 GB | ComfyUI · GPU | Tencent Hunyuan Community* |
-| Quitar fondo | IS-Net (también BiRefNet y U2-Net) | 179 MB | ONNX · CPU | Apache 2.0 / MIT |
+| Quitar fondo | BiRefNet + IS-Net combinados (también U2-Net) | 224 + 179 MB | ONNX · CPU | MIT / Apache 2.0 |
 | Profundidad | Depth Anything V2 Small | 99 MB | ONNX · CPU | Apache 2.0 |
 | Texto → imagen (opcional) | SDXL base 1.0 | 6.9 GB | ComfyUI · GPU | OpenRAIL++ |
 
@@ -188,6 +208,7 @@ uv sync --group dev
 uv run pytest                       # geometría, 3MF, clientes y API completa contra simuladores
 uv run python tools/demo.py         # la app entera con Ollama y ComfyUI simulados (sin GPU)
 uv run python tools/demo.py --motores-apagados   # igual, pero para probar el botón «Encender IA»
+uv run python tools/banco_recorte.py             # mide la calidad del recorte (baja los modelos la primera vez)
 uv run python -m plasmo --navegador # abre en el navegador en vez de ventana propia
 ```
 
