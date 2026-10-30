@@ -11,6 +11,7 @@ import math
 
 import numpy as np
 import trimesh
+from scipy import ndimage
 from scipy.spatial import ConvexHull, QhullError
 
 MIN_WALL_MM = {"fdm": 1.0, "sla": 0.8}
@@ -192,7 +193,14 @@ def analyze(mesh: trimesh.Trimesh, printer: dict | None = None, thin: str = "err
 
 # --------------------------------------------------------------------- reparar
 
-def repair(mesh: trimesh.Trimesh, min_part_ratio: float = 0.02, voxel_res: int = 256) -> tuple[trimesh.Trimesh, list[str]]:
+def repair(mesh: trimesh.Trimesh, min_part_ratio: float = 0.02, voxel_res: int = 256, force_voxel: bool = False,
+           grow: float = 0.0) -> tuple[trimesh.Trimesh, list[str]]:
+    """Deja la malla cerrada y limpia.
+
+    `force_voxel` la rehace siempre por vóxeles (quita caras internas y huecos
+    escondidos); `grow` engrosa toda la superficie esa distancia (en las
+    unidades de la malla) para que las partes finas aguanten la impresión.
+    """
     log: list[str] = []
     m = mesh.copy()
     m.merge_vertices()
@@ -220,18 +228,30 @@ def repair(mesh: trimesh.Trimesh, min_part_ratio: float = 0.02, voxel_res: int =
             log.append("Tapé los agujeros.")
 
     non_manifold, _ = edge_stats(m)
-    if not m.is_watertight or non_manifold:
-        m = voxel_remesh(m, voxel_res)
-        log.append(f"Rehíce la malla por vóxeles ({voxel_res}³) para dejarla cerrada.")
+    if force_voxel or grow > 0 or not m.is_watertight or non_manifold:
+        m = voxel_remesh(m, voxel_res, grow)
+        why = "para dejarla cerrada" if not force_voxel and grow <= 0 else "como pediste"
+        log.append(f"Rehíce la malla por vóxeles ({voxel_res}³) {why}.")
     if m.is_watertight and m.volume < 0:
         m.invert()
     return m, log or ["La malla ya estaba sana."]
 
 
-def voxel_remesh(mesh: trimesh.Trimesh, resolution: int = 256) -> trimesh.Trimesh:
+def voxel_remesh(mesh: trimesh.Trimesh, resolution: int = 256, grow: float = 0.0) -> trimesh.Trimesh:
     pitch = float(mesh.extents.max()) / resolution
     vox = mesh.voxelized(pitch).fill()
-    out = vox.marching_cubes
+    steps = int(round(grow / pitch)) if grow > 0 else 0
+    if steps:
+        # engrosar = dilatar el sólido con una bola del radio pedido
+        pad = steps + 1
+        grid = np.pad(vox.matrix, pad)
+        r = np.arange(-steps, steps + 1)
+        ball = (r[:, None, None] ** 2 + r[None, :, None] ** 2 + r[None, None, :] ** 2) <= steps * steps
+        grid = ndimage.binary_dilation(grid, structure=ball)
+        out = trimesh.voxel.ops.matrix_to_marching_cubes(grid)
+        out.apply_translation([-pad, -pad, -pad])
+    else:
+        out = vox.marching_cubes
     out.apply_transform(vox.transform)
     trimesh.smoothing.filter_taubin(out, iterations=8)
     out.fix_normals()
@@ -316,7 +336,7 @@ def add_base(mesh: trimesh.Trimesh, kind: str = "disco", height_mm: float = 3.0,
 
 def polish(mesh: trimesh.Trimesh, level: str = "suave") -> trimesh.Trimesh:
     """Pulido de superficie (Taubin): quita el escalonado de la malla sin encogerla."""
-    iterations = {"suave": 6, "fuerte": 20}.get(level, 0)
+    iterations = {"suave": 6, "medio": 12, "fuerte": 20}.get(level, 0)
     if iterations and len(mesh.faces):
         trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=0.53, iterations=iterations)
     return mesh

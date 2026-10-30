@@ -61,6 +61,13 @@ def png_bytes(img: Image.Image) -> bytes:
 
 # calidad → (detalle de la malla, multiplicador de pasos sobre la plantilla oficial)
 QUALITY = {"maxima": (512, 5 / 3), "alta": (384, 4 / 3), "rapida": (256, 1.0)}
+# lo que aceptan los nodos de ComfyUI (cualquier otro valor vuelve al de la plantilla)
+SAMPLERS = {"euler", "heun", "dpmpp_2m", "uni_pc"}
+SCHEDULERS = {"normal", "simple", "beta", "sgm_uniform"}
+
+
+def _clamp(value, lo, hi):
+    return max(lo, min(hi, value))
 
 
 def hunyuan_workflow(image_name: str, checkpoint: str, params: dict) -> dict:
@@ -70,24 +77,29 @@ def hunyuan_workflow(image_name: str, checkpoint: str, params: dict) -> dict:
     steps = int(params.get("pasos") or 0) or round(preset["steps"] * steps_mult)
     cfg = float(params.get("guia") or 0) or preset["cfg"]
     seed = int(params.get("semilla") or 0) or random.randint(1, 2**31 - 1)
-    octree = int(params.get("octree") or 0) or octree_q
+    octree = _clamp(int(params.get("octree") or 0) or octree_q, 64, 512)
+    latents = _clamp(int(params.get("latentes") or 0) or preset["resolution"], 256, 8192)
+    threshold = _clamp(float(params.get("umbral") or 0.6), -1.0, 1.0)
+    shift = _clamp(float(params.get("shift") or 1.0), 0.1, 10.0)
+    sampler = params.get("muestreador") if params.get("muestreador") in SAMPLERS else "euler"
+    scheduler = params.get("programador") if params.get("programador") in SCHEDULERS else "normal"
     algorithm = "basic" if params.get("algoritmo") == "rapido" else "surface net"
     return {
         "1": {"class_type": "ImageOnlyCheckpointLoader", "inputs": {"ckpt_name": checkpoint}},
         "2": {"class_type": "LoadImage", "inputs": {"image": image_name}},
         "3": {"class_type": "CLIPVisionEncode", "inputs": {"clip_vision": ["1", 1], "image": ["2", 0], "crop": "center"}},
         "4": {"class_type": "Hunyuan3Dv2Conditioning", "inputs": {"clip_vision_output": ["3", 0]}},
-        "5": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": 1.0}},
-        "6": {"class_type": "EmptyLatentHunyuan3Dv2", "inputs": {"resolution": preset["resolution"], "batch_size": 1}},
+        "5": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": shift}},
+        "6": {"class_type": "EmptyLatentHunyuan3Dv2", "inputs": {"resolution": latents, "batch_size": 1}},
         "7": {
             "class_type": "KSampler",
             "inputs": {
                 "model": ["5", 0], "positive": ["4", 0], "negative": ["4", 1], "latent_image": ["6", 0],
-                "seed": seed, "steps": steps, "cfg": cfg, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
+                "seed": seed, "steps": steps, "cfg": cfg, "sampler_name": sampler, "scheduler": scheduler, "denoise": 1.0,
             },
         },
         "8": {"class_type": "VAEDecodeHunyuan3D", "inputs": {"samples": ["7", 0], "vae": ["1", 2], "num_chunks": 8000, "octree_resolution": octree}},
-        "9": {"class_type": "VoxelToMesh", "inputs": {"voxel": ["8", 0], "algorithm": algorithm, "threshold": 0.6}},
+        "9": {"class_type": "VoxelToMesh", "inputs": {"voxel": ["8", 0], "algorithm": algorithm, "threshold": threshold}},
         "10": {"class_type": "SaveGLB", "inputs": {"mesh": ["9", 0], "filename_prefix": "3d/plasmo"}},
     }
 

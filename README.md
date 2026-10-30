@@ -34,6 +34,7 @@ Sube una imagen y recibe una pieza lista para el slicer. Funciona 100 % en tu PC
 - [Cómo funciona](#cómo-funciona)
 - [Calidad medida](#calidad-medida)
 - [Formas de impresión](#formas-de-impresión)
+- [Opciones de calidad](#opciones-de-calidad)
 - [Modelos de IA](#modelos-de-ia)
 - [Configuración](#configuración)
 - [Desarrollo](#desarrollo)
@@ -61,7 +62,8 @@ Es una alternativa personal y gratuita a [Meshy](https://www.meshy.ai/), pensada
 | 🖼️ **Seis formas sin GPU** | Relieve, litofanía (plana, curva o lámpara), llavero, imán, pixel art multicolor y cortador. Salen de un generador de sólidos que siempre da mallas cerradas. |
 | ✂️ **Detecta todo el sujeto** | Combina IS-Net y BiRefNet, cada uno con doble pasada (foto y espejo), sin deformar la proporción. Un filtro guiado por los colores de la foto ajusta los bordes, conserva **todos** los objetos (solo quita motas) y borra el halo del fondo. Da una nota de calidad con avisos ("puede estar cortado", "detecté 2 objetos"). |
 | 🔍 **La IA revisa el recorte** | Ollama compara la foto con el recorte, lista todo lo que ve y avisa si falta algo (una oreja, una mano, un objeto que sostiene). |
-| ⛰️ **Relieves con detalle** | Depth Anything V2 lee la foto real con su proporción y doble pasada, sin ruido. Suma el detalle fino (ojos, texturas) y termina el borde con un bisel suave. Todo corre en CPU con ONNX. |
+| ⛰️ **Relieves con detalle** | Depth Anything V2 (Small, Base o Large) lee la foto real con su proporción y doble pasada, sin ruido. Suma el detalle fino (ojos, texturas) y termina el borde con un bisel suave. Todo corre en CPU con ONNX. |
+| 🎚️ **Opciones de calidad** | Perfiles de un clic (Rápida, Equilibrada, Máxima, Ultra) y más de 30 opciones agrupadas: mejor de N intentos, umbral de superficie, muestreador, engrosar partes finas, contraste local, nitidez, resolución de la malla y más. |
 | 🔍 **Revisión de imprimibilidad** | Malla cerrada, aristas no manifold, agujeros, paredes finas, voladizos sin apoyo, estabilidad, si cabe en la cama y peso estimado. |
 | 🛠️ **Preparación y pulido** | Reparación (incluida una rehecha por vóxeles), pulido de superficie que no encoge la pieza, contornos sin escalones, escala en mm, aplanado, pedestal y corte en partes si no cabe. Los objetos sueltos se unen con un puente para imprimir una sola pieza. |
 | 📦 **Exportación** | STL, 3MF multipieza con colores (listo para AMS/MMU), OBJ y ZIP de piezas, más un botón para abrirla en tu slicer. |
@@ -165,13 +167,45 @@ La máxima calidad tarda más: en la CPU, el recorte toma unos 30–50 s y la pr
 
 | Forma | Qué sale | Parámetros clave | Ideal para |
 |---|---|---|---|
-| **Figura 3D (IA)** | Modelo completo del sujeto | Detalle de malla, pasos, semilla, tamaño, base, aplanado | Personajes, mascotas, juguetes |
+| **Figura 3D (IA)** | Modelo completo del sujeto | Calidad, intentos, umbral, muestreo, tamaño, base, aplanado, engrosado | Personajes, mascotas, juguetes |
 | **Relieve** | Placa con la imagen en relieve | Contorno (silueta, círculo, escudo, estrella, corazón…), alto, borde, curva | Logos, retratos, recuerdos |
 | **Litofanía** | Lámina que revela la foto a contraluz | Forma (plana, curva, cilindro), grosor mínimo y máximo, marco | Fotos de personas y paisajes |
 | **Llavero** | Silueta o medalla con argolla | Tamaño, grosor, relieve, argolla, agujero | Regalos rápidos |
 | **Imán de nevera** | Pieza con bolsillo para imán | Diámetro y alto del imán, contorno | Recuerdos, eventos |
 | **Pixel art multicolor** | Bloques de color, una pieza por color | Píxeles, colores, tamaño, placa | Logos y personajes de videojuego |
 | **Cortador de galletas** | Filo con la silueta y pestaña | Filo, alto, pestaña | Formas simples y cerradas |
+
+## Opciones de calidad
+
+Cada forma trae perfiles de calidad que cambian varias opciones de un clic. **Máxima** es el perfil por defecto. Si tocas una opción a mano, el perfil queda como *Personalizada*, y el botón ↻ vuelve a lo recomendado. Las opciones avanzadas empiezan plegadas, y cada una explica qué hace al pasar el mouse por su signo «?».
+
+| Perfil | Figura 3D | Relieve, llavero, imán | Litofanía y cortador |
+|---|---|---|---|
+| **Rápida** | Malla 256, 30 pasos, reparación 256 | Profundidad Small a 518, 0,3 mm | 0,3 mm |
+| **Equilibrada** | Malla 384, 40 pasos, reparación 384 | Small a 728, 0,2 mm | 0,2 mm |
+| **Máxima** | Malla 512, 50 pasos, reparación 512, hasta 1 millón de triángulos | **Base** a 728, 0,15 mm, 1,5 MP | 0,15 mm, 1,5 MP |
+| **Ultra** | Lo de Máxima con 70 pasos, **3 intentos** y malla rehecha a 640 | **Large** a 1022, 0,1 mm, 3 MP | 0,1 mm, 3 MP |
+
+**Figura 3D (IA)**
+
+- **Intentos (mejor de N).** Genera varias figuras con semillas distintas y se queda con la que más se parece a la silueta de la foto. Las notas dicen la semilla ganadora para repetirla.
+- **Foto para la IA.** Tamaño del sujeto en el cuadro y *Realzar la foto*, que aplica contraste automático y nitidez a fotos lavadas o borrosas.
+- **Muestreo avanzado.** Umbral de superficie (más bajo recupera orejas, colas y dedos finos), detalle de la forma (latentes), pasos, guía, muestreador (Euler, Heun, DPM++ 2M, UniPC), programador y desplazamiento.
+- **Superficie y malla.** Pulido en cuatro niveles y *Engrosar partes finas* en mm. Detalle al reparar (256–640), rehacer siempre por vóxeles, fragmentos sueltos a quitar y tope de triángulos (o *Sin reducir*).
+
+**Relieve, llavero e imán**
+
+- Modelo de profundidad: Small, Base o Large. Base y Large se descargan solos la primera vez.
+- Resolución de profundidad de 518 a 1288.
+- Contraste local (CLAHE), tamaño del detalle (fino, medio o grueso), contorno suavizado, resolución en mm y detalle máximo.
+
+**Otras formas**
+
+- **Litofanía:** gamma de tonos, contraste local, nitidez, suavizado y resolución.
+- **Pixel art:** colores agrupados como los ve el ojo (Lab), el color dominante de cada píxel para bordes nítidos, y quitar los píxeles sueltos.
+- **Cortador:** detalle mínimo que puede seguir el filo, y resolución.
+
+En una laptop sin GPU, la profundidad Base tarda unos 13 s a 728 y 48 s a 1022, y Small unos 6 s y 13 s.
 
 ## Modelos de IA
 
@@ -180,7 +214,7 @@ La máxima calidad tarda más: en la CPU, el recorte toma unos 30–50 s y la pr
 | Análisis y chat | `qwen3.5:9b` (alternativas: `qwen3.5:4b`, `gemma4:12b`) | 6.6 GB | Ollama · GPU | Ver su página en ollama.com |
 | Figura 3D | Hunyuan3D 2.1 (respaldo: 2.0) | 7.4 GB | ComfyUI · GPU | Tencent Hunyuan Community* |
 | Quitar fondo | BiRefNet + IS-Net combinados (también U2-Net) | 224 + 179 MB | ONNX · CPU | MIT / Apache 2.0 |
-| Profundidad | Depth Anything V2 Small | 99 MB | ONNX · CPU | Apache 2.0 |
+| Profundidad | Depth Anything V2 Small · Base · Large | 99 · 371 · 1275 MB | ONNX · CPU | Apache 2.0 (Small) · CC-BY-NC-4.0 (Base y Large, uso no comercial) |
 | Texto → imagen (opcional) | SDXL base 1.0 | 6.9 GB | ComfyUI · GPU | OpenRAIL++ |
 
 <sub>*Permite uso comercial, pero no es válida en la UE, el Reino Unido ni Corea del Sur. Por qué se eligieron estos modelos y no otros: [docs/INVESTIGACION.md](docs/INVESTIGACION.md).</sub>

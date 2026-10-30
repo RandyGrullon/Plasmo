@@ -50,6 +50,11 @@ def _bilinear(img: np.ndarray, px: np.ndarray, py: np.ndarray) -> np.ndarray:
 
 def fit_frame(vertices: np.ndarray, alpha: np.ndarray, grid: int = 96, samples: int = 20000) -> Frame:
     """Alinea la silueta frontal de la figura con la del recorte (escala y corrimiento finos)."""
+    return fit_score(vertices, alpha, grid, samples)[0]
+
+
+def fit_score(vertices: np.ndarray, alpha: np.ndarray, grid: int = 96, samples: int = 20000) -> tuple[Frame, float]:
+    """Como `fit_frame`, y además cuánto se parece la silueta frontal a la de la foto (IoU 0–1)."""
     x, z = vertices[:, 0], vertices[:, 2]
     base = Frame(float(x.min()), float(x.max()), float(z.min()), float(z.max()), tuple(float(v) for v in proc.bbox(alpha)))
     rng = np.random.default_rng(0)
@@ -74,7 +79,7 @@ def fit_frame(vertices: np.ndarray, alpha: np.ndarray, grid: int = 96, samples: 
                 iou = (occ & target).sum() / max((occ | target).sum(), 1)
                 if iou > best_iou:
                     best, best_iou = fr, iou
-    return best
+    return best, float(best_iou)
 
 
 def _region_colors(img: Image.Image, small: int = 72, size: int = 23) -> np.ndarray:

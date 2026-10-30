@@ -11,6 +11,7 @@ import httpx
 from plasmo.config import MODELS_DIR
 
 REMBG = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/"
+DEPTH_HF = "https://huggingface.co/onnx-community/depth-anything-v2-{}/resolve/main/onnx/model.onnx"
 
 
 @dataclass(frozen=True)
@@ -29,16 +30,17 @@ CATALOG: dict[str, OnnxModel] = {
         OnnxModel("isnet-general-use", "IS-Net (recomendado)", REMBG + "isnet-general-use.onnx", "isnet-general-use.onnx", 179, "fondo"),
         OnnxModel("birefnet-lite", "BiRefNet lite (bordes finos)", REMBG + "BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx", "birefnet-general-lite.onnx", 224, "fondo"),
         OnnxModel("u2netp", "U2-Net P (rápido, 5 MB)", REMBG + "u2netp.onnx", "u2netp.onnx", 5, "fondo"),
-        OnnxModel(
-            "depth-anything-v2-small",
-            "Depth Anything V2 Small",
-            "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx",
-            "depth-anything-v2-small.onnx",
-            99,
-            "profundidad",
-        ),
+        OnnxModel("depth-anything-v2-small", "Depth Anything V2 Small", DEPTH_HF.format("small"), "depth-anything-v2-small.onnx", 99, "profundidad"),
+        # Base y Large tienen licencia CC-BY-NC-4.0: sirven para uso personal, no comercial
+        OnnxModel("depth-anything-v2-base", "Depth Anything V2 Base (más detalle, uso no comercial)", DEPTH_HF.format("base"),
+                  "depth-anything-v2-base.onnx", 371, "profundidad"),
+        OnnxModel("depth-anything-v2-large", "Depth Anything V2 Large (máximo detalle, uso no comercial)", DEPTH_HF.format("large"),
+                  "depth-anything-v2-large.onnx", 1275, "profundidad"),
     ]
 }
+
+# clave corta de los parámetros → modelo del catálogo
+DEPTH_MODELS = {"small": "depth-anything-v2-small", "base": "depth-anything-v2-base", "large": "depth-anything-v2-large"}
 
 
 def model_path(key: str) -> Path:

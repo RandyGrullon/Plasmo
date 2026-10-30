@@ -192,6 +192,29 @@ details.params summary { cursor: pointer; color: var(--muted); font-size: 12.5px
 details.params summary::before { content: "▸"; transition: transform 0.15s; }
 details.params[open] summary::before { transform: rotate(90deg); }
 .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin-top: 8px; }
+.field-groups { display: flex; flex-direction: column; gap: 4px; }
+.sub { margin-top: 6px; }
+.sub-title, details.sub summary {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); padding: 4px 0 0;
+}
+details.sub { border: 1px dashed var(--line); border-radius: 8px; padding: 4px 9px 9px; margin-top: 8px; }
+details.sub summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; text-transform: uppercase; }
+details.sub summary::-webkit-details-marker { display: none; }
+details.sub summary::before { content: "▸"; transition: transform 0.15s; }
+details.sub[open] summary::before { transform: rotate(90deg); }
+details.sub summary .small { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.qi {
+  display: inline-grid; place-items: center; width: 13px; height: 13px; margin-left: 4px; border-radius: 50%;
+  border: 1px solid var(--faint); color: var(--faint); font-size: 9px; line-height: 1; vertical-align: 1px; cursor: help;
+}
+.profiles { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+.profiles:empty { display: none; }
+.profiles-label { font-size: 11.5px; color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 5px 10px; font-size: 12px; background: var(--panel-2); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--accent-soft); color: var(--accent); }
+#btn-reset { margin-left: auto; }
 .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .field.wide { grid-column: 1 / -1; }
 .field label { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -202,6 +225,8 @@ input[type="text"], input[type="number"], input[type="url"], select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .switch { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); cursor: pointer; padding-top: 16px; }
 .switch input { accent-color: var(--accent); width: 15px; height: 15px; }
+.switch.field { flex-direction: row; align-items: center; gap: 8px; line-height: 1.25; }
+.switch.field input { flex: none; }
 .generate {
   position: sticky; bottom: -14px; margin: 12px -14px -14px; padding: 18px 14px 14px;
   background: linear-gradient(to bottom, transparent, var(--panel) 38%); border-radius: 0 0 var(--radius) var(--radius);

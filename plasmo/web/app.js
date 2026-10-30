@@ -449,22 +449,79 @@ function renderForms() {
 
 function fieldHtml(f, value, group) {
   const id = `f-${group}-${f.clave}`;
+  const tip = f.ayuda ? ` title="${esc(f.ayuda)}"` : "";
+  const qi = f.ayuda ? `<span class="qi" aria-hidden="true">?</span>` : "";
   if (f.tipo === "si_no") {
-    return `<label class="switch field" title="${esc(f.ayuda || "")}"><input type="checkbox" id="${id}" data-g="${group}" data-k="${f.clave}" ${value ? "checked" : ""}>${esc(f.nombre)}</label>`;
+    return `<label class="switch field"${tip}><input type="checkbox" id="${id}" data-g="${group}" data-k="${f.clave}" ${value ? "checked" : ""}>${esc(f.nombre)}${qi}</label>`;
   }
   if (f.tipo === "opcion") {
-    return `<div class="field"><label for="${id}" title="${esc(f.ayuda || "")}">${esc(f.nombre)}</label>
-      <select id="${id}" data-g="${group}" data-k="${f.clave}">${f.opciones.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>`;
+    return `<div class="field"><label for="${id}"${tip}>${esc(f.nombre)}${qi}</label>
+      <select id="${id}" data-g="${group}" data-k="${f.clave}"${tip}>${f.opciones.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>`;
   }
-  return `<div class="field"><label for="${id}" title="${esc(f.ayuda || "")}">${esc(f.nombre)} ${f.unidad ? `<span class="unit">(${esc(f.unidad)})</span>` : ""}</label>
-    <input type="number" id="${id}" data-g="${group}" data-k="${f.clave}" value="${value}" min="${f.min}" max="${f.max}" step="${f.paso}" title="${esc(f.ayuda || "")}"></div>`;
+  return `<div class="field"><label for="${id}"${tip}>${esc(f.nombre)} ${f.unidad ? `<span class="unit">(${esc(f.unidad)})</span>` : ""}${qi}</label>
+    <input type="number" id="${id}" data-g="${group}" data-k="${f.clave}" value="${value}" min="${f.min}" max="${f.max}" step="${f.paso}"${tip}></div>`;
+}
+
+// secciones de parámetros: las avanzadas empiezan plegadas y recuerdan si las abriste
+const openGroups = new Set();
+
+function groupsHtml(form, list, values, section) {
+  const loose = list.filter((f) => !f.grupo);
+  const parts = loose.length ? [`<div class="fields">${loose.map((f) => fieldHtml(f, values[f.clave], section)).join("")}</div>`] : [];
+  for (const g of form.grupos || []) {
+    const items = list.filter((f) => f.grupo === g.clave);
+    if (!items.length) continue;
+    const body = `<div class="fields">${items.map((f) => fieldHtml(f, values[f.clave], section)).join("")}</div>`;
+    const key = `${form.clave}:${section}:${g.clave}`;
+    parts.push(g.plegado
+      ? `<details class="sub" data-grp="${esc(key)}" ${openGroups.has(key) ? "open" : ""}><summary>${esc(g.nombre)} <span class="muted small">· ${items.length}</span></summary>${body}</details>`
+      : `<div class="sub"><div class="sub-title">${esc(g.nombre)}</div>${body}</div>`);
+  }
+  return parts.join("");
+}
+
+const sameValue = (a, b) => String(a) === String(b);
+
+function activeProfile(form, v) {
+  return (form.perfiles || []).find((p) =>
+    Object.entries(p.parametros).every(([k, val]) => sameValue(v.parametros[k], val)) &&
+    Object.entries(p.impresion).every(([k, val]) => sameValue(v.impresion[k], val)));
+}
+
+function renderProfiles() {
+  const form = state.forms.find((f) => f.clave === state.form);
+  const v = state.values[state.form];
+  const list = form?.perfiles || [];
+  const box = $("#profiles");
+  if (!list.length) { box.innerHTML = ""; return; }
+  const on = activeProfile(form, v);
+  box.innerHTML = `<span class="profiles-label">Calidad</span>
+    <div class="seg">${list.map((p) => `<button class="${p === on ? "on" : ""}" data-p="${esc(p.clave)}" title="${esc(p.ayuda)}">${esc(p.nombre)}</button>`).join("")}</div>
+    ${on ? "" : `<span class="chip">Personalizada</span>`}
+    <button class="ghost sm" id="btn-reset" title="Restablecer: volver a los valores recomendados" aria-label="Restablecer" data-icon="refresh"></button>`;
+  hydrateIcons(box);
+  $$("#profiles [data-p]").forEach((b) => b.addEventListener("click", () => {
+    const p = list.find((x) => x.clave === b.dataset.p);
+    Object.assign(v.parametros, p.parametros);
+    Object.assign(v.impresion, p.impresion);
+    renderFields();
+    toast(`Perfil ${p.nombre}: ${p.ayuda}`);
+  }));
+  $("#btn-reset").addEventListener("click", () => {
+    state.values[state.form] = { parametros: defaults(form.parametros), impresion: defaults(form.impresion) };
+    renderFields();
+  });
 }
 
 function renderFields() {
   const form = state.forms.find((f) => f.clave === state.form);
   const v = state.values[state.form];
-  $("#fields").innerHTML = form.parametros.map((f) => fieldHtml(f, v.parametros[f.clave], "parametros")).join("");
-  $("#print-fields").innerHTML = form.impresion.map((f) => fieldHtml(f, v.impresion[f.clave], "impresion")).join("");
+  $("#fields").innerHTML = groupsHtml(form, form.parametros, v.parametros, "parametros");
+  $("#print-fields").innerHTML = groupsHtml(form, form.impresion, v.impresion, "impresion");
+  $$("#fields details.sub, #print-fields details.sub").forEach((d) => d.addEventListener("toggle", () => {
+    if (d.open) openGroups.add(d.dataset.grp);
+    else openGroups.delete(d.dataset.grp);
+  }));
   $$("#fields [data-k], #print-fields [data-k]").forEach((el) => el.addEventListener("change", () => {
     const def = [...form.parametros, ...form.impresion].find((f) => f.clave === el.dataset.k);
     let val = el.type === "checkbox" ? el.checked : el.value;
@@ -472,7 +529,9 @@ function renderFields() {
     else if (def?.tipo === "opcion" && typeof def.defecto === "number") val = Number(val);
     state.values[state.form][el.dataset.g][el.dataset.k] = val;
     if (el.type === "number") el.value = val;
+    renderProfiles();
   }));
+  renderProfiles();
 }
 
 async function generate() {
@@ -674,7 +733,7 @@ async function openSettings() {
           ${[["auto", "Máxima calidad: IS-Net + BiRefNet (recomendado)"], ["isnet-general-use", "IS-Net"], ["birefnet-lite", "BiRefNet lite"], ["u2netp", "U2-Net P (rápido)"], ["simple", "Por color (sin modelo)"]]
             .map(([k, l]) => `<option value="${k}" ${cfg.bg_model === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
         <div class="field"><label>Profundidad para relieves</label><select id="s-depth">
-          <option value="depth-anything-v2-small" ${cfg.depth_model === "depth-anything-v2-small" ? "selected" : ""}>Depth Anything V2 Small</option>
+          <option value="depth-anything-v2-small" ${cfg.depth_model !== "luminancia" ? "selected" : ""}>Con IA (el modelo se elige en cada forma)</option>
           <option value="luminancia" ${cfg.depth_model === "luminancia" ? "selected" : ""}>Luz y sombra (sin modelo)</option></select></div>
       </div>
       ${st.onnx.map((m) => `<div class="model-row"><div class="grow"><b>${esc(m.nombre)}</b> <span class="muted small">· ${m.mb} MB · ${esc(m.tipo)}</span></div>

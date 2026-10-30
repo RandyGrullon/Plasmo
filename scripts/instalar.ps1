@@ -17,8 +17,8 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 Write-Host "Instalando dependencias (Python 3.12 incluido)..." -ForegroundColor Cyan
 uv sync --no-dev
 
-Write-Host "Descargando modelos de recorte y profundidad (~500 MB)..." -ForegroundColor Cyan
-uv run --no-dev python -c "from plasmo.imaging import downloads as d; [print(d.download(k)) for k in ('isnet-general-use', 'birefnet-lite', 'depth-anything-v2-small')]"
+Write-Host "Descargando modelos de recorte y profundidad (~870 MB)..." -ForegroundColor Cyan
+uv run --no-dev python -c "from plasmo.imaging import downloads as d; [print(d.download(k)) for k in ('isnet-general-use', 'birefnet-lite', 'depth-anything-v2-small', 'depth-anything-v2-base')]"
 
 $desktop = [Environment]::GetFolderPath("Desktop")
 $shell = New-Object -ComObject WScript.Shell

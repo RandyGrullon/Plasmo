@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 from scipy import ndimage
 
 from plasmo.imaging import downloads
@@ -356,6 +356,16 @@ def cutout(img: Image.Image, mask: np.ndarray, margin: float = 0.06) -> Image.Im
     return rgba.crop(cut_box(mask, margin))
 
 
+def enhance_for_ai(cut: Image.Image) -> Image.Image:
+    """Realza la foto antes de mandarla al generador: contraste automático y nitidez suave."""
+    alpha = cut.getchannel("A") if cut.mode == "RGBA" else None
+    rgb = ImageOps.autocontrast(cut.convert("RGB"), cutoff=0.5)
+    rgb = rgb.filter(ImageFilter.UnsharpMask(radius=2, percent=70, threshold=2))
+    if alpha is not None:
+        rgb.putalpha(alpha)
+    return rgb
+
+
 def square_on_background(cut: Image.Image, size: int = 1024, fill: float = 0.85, color=(255, 255, 255)) -> Image.Image:
     """Centra el recorte en un lienzo cuadrado (lo que esperan los generadores 3D)."""
     canvas = Image.new("RGB", (size, size), color)
@@ -374,9 +384,9 @@ def luminance(img: Image.Image) -> np.ndarray:
 DEPTH_LONG_SIDE = 728  # múltiplo de 14 (el paso de parche de Depth Anything)
 
 
-def _depth_input(img: Image.Image, flip: bool) -> np.ndarray:
+def _depth_input(img: Image.Image, flip: bool, long_side: int = DEPTH_LONG_SIDE) -> np.ndarray:
     w, h = img.size
-    s = DEPTH_LONG_SIDE / max(w, h)
+    s = long_side / max(w, h)
     size = (max(14, round(w * s / 14) * 14), max(14, round(h * s / 14) * 14))
     rgb = img.convert("RGB").resize(size, Image.BICUBIC)
     if flip:
@@ -386,7 +396,8 @@ def _depth_input(img: Image.Image, flip: bool) -> np.ndarray:
     return arr.transpose(2, 0, 1)[None].astype(np.float32)
 
 
-def depth(img: Image.Image, model_key: str = "depth-anything-v2-small", tta: bool = True, smooth: bool = True) -> np.ndarray:
+def depth(img: Image.Image, model_key: str = "depth-anything-v2-small", tta: bool = True, smooth: bool = True,
+          long_side: int = DEPTH_LONG_SIDE) -> np.ndarray:
     """Profundidad relativa en [0, 1] (1 = más cerca), con la proporción de la foto.
 
     Promedia la foto y su espejo y suaviza el ruido siguiendo los bordes de la
@@ -398,7 +409,7 @@ def depth(img: Image.Image, model_key: str = "depth-anything-v2-small", tta: boo
     name = sess.get_inputs()[0].name
     preds = []
     for flip in ((False, True) if tta else (False,)):
-        pred = np.squeeze(sess.run(None, {name: _depth_input(img, flip)})[0]).astype(np.float32)
+        pred = np.squeeze(sess.run(None, {name: _depth_input(img, flip, long_side)})[0]).astype(np.float32)
         preds.append(pred[:, ::-1] if flip else pred)
     pred = np.mean(preds, axis=0)
     lo, hi = np.percentile(pred, [0.5, 99.5])
@@ -417,6 +428,25 @@ def high_detail(img: Image.Image, sigma: float = 3.0) -> np.ndarray:
     hp = lum - ndimage.gaussian_filter(lum, sigma)
     scale = float(np.percentile(np.abs(hp), 99)) or 1.0
     return np.clip(hp / scale, -1.0, 1.0)
+
+
+def local_contrast(values: np.ndarray, amount: float) -> np.ndarray:
+    """Contraste local (CLAHE): saca relieve de las zonas planas sin quemar los extremos."""
+    if amount <= 0:
+        return values
+    from skimage import exposure
+
+    v = np.clip(values, 0.0, 1.0)
+    eq = exposure.equalize_adapthist(v, kernel_size=max(8, min(v.shape) // 8), clip_limit=0.012).astype(np.float32)
+    return (1 - amount) * v + amount * eq
+
+
+def sharpen(values: np.ndarray, amount: float, sigma: float = 1.2) -> np.ndarray:
+    """Máscara de enfoque sobre un mapa en [0, 1]."""
+    if amount <= 0:
+        return values
+    v = np.asarray(values, dtype=np.float32)
+    return np.clip(v + amount * (v - ndimage.gaussian_filter(v, sigma)), 0.0, 1.0)
 
 
 def apply_curve(values: np.ndarray, curve: str = "linear", param: float = 1.0) -> np.ndarray:

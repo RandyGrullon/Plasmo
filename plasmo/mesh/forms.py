@@ -14,12 +14,14 @@ import numpy as np
 import trimesh
 from PIL import Image, ImageDraw
 from scipy import ndimage
-from scipy.cluster.vq import kmeans2
+from scipy.cluster.vq import kmeans2, vq
 
+from plasmo.imaging import downloads
 from plasmo.imaging import processing as proc
 from plasmo.mesh.heightfield import bend_cylinder, heightfield_solid
 
 MAX_PIXELS = 700_000
+DETAIL_SIGMA = {"fino": 1.5, "medio": 3.0, "grueso": 6.0}  # tamaño del detalle fino (px de la foto)
 
 
 @dataclass
@@ -39,15 +41,18 @@ class FormResult:
 class Source:
     """La imagen del usuario con su recorte; la profundidad se calcula una sola vez."""
 
-    def __init__(self, image: Image.Image, mask: np.ndarray, depth_model: str = "depth-anything-v2-small"):
+    def __init__(self, image: Image.Image, mask: np.ndarray, depth_model: str = "depth-anything-v2-small",
+                 depth_side: int = proc.DEPTH_LONG_SIDE):
         self.image = image
         self.mask = mask
         self.box = proc.cut_box(mask)
         self.cut = proc.cutout(image, mask)
         self.cut_mask = np.asarray(self.cut.getchannel("A"), dtype=np.float32) / 255.0
         self.depth_model = depth_model
-        self._depth: np.ndarray | None = None
-        self._detail: np.ndarray | None = None
+        self.depth_side = depth_side
+        self.notes: list[str] = []
+        self._depths: dict[tuple[str, int], np.ndarray] = {}
+        self._details: dict[float, np.ndarray] = {}
 
     def on_white(self) -> Image.Image:
         rgb = Image.new("RGB", self.cut.size, (255, 255, 255))
@@ -58,20 +63,25 @@ class Source:
         """Altura relativa [0,1] sobre el recorte: profundidad IA o luminancia."""
         if source == "luminancia" or self.depth_model == "luminancia":
             return proc.luminance(self.on_white())
-        if self._depth is None:
+        key = (self.depth_model, int(self.depth_side))
+        if key not in self._depths:
             try:
                 # la foto real (con su fondo) da más contexto al modelo que el recorte sobre blanco
-                self._depth = proc.depth(self.image.convert("RGB").crop(self.box), self.depth_model)
+                self._depths[key] = proc.depth(self.image.convert("RGB").crop(self.box), self.depth_model, long_side=key[1])
             except Exception:  # sin modelo o sin red: no frenamos la pieza
-                self.depth_model = "luminancia"
-                return self.relief_map("luminancia")
-        return self._depth
+                small = downloads.DEPTH_MODELS["small"]
+                fallback = small if self.depth_model != small else "luminancia"
+                label = downloads.CATALOG[fallback].label if fallback in downloads.CATALOG else "la luz y sombra de la foto"
+                self.notes.append(f"No pude usar {self.depth_model}; seguí con {label}.")
+                self.depth_model = fallback
+                return self.relief_map(source)
+        return self._depths[key]
 
-    def detail_map(self) -> np.ndarray:
+    def detail_map(self, sigma: float = 3.0) -> np.ndarray:
         """Detalle fino del sujeto (ojos, bordes, texturas) en [-1, 1]."""
-        if self._detail is None:
-            self._detail = proc.high_detail(self.on_white())
-        return self._detail
+        if sigma not in self._details:
+            self._details[sigma] = proc.high_detail(self.on_white(), sigma)
+        return self._details[sigma]
 
 
 # ------------------------------------------------------------------ utilidades
@@ -88,14 +98,19 @@ def _p(params: dict, key: str, default):
     return value
 
 
-def fit_grid(aspect_wh: float, longest_mm: float, res_mm: float) -> tuple[int, int, float]:
-    """Tamaño de la grilla (w, h) y resolución final, sin pasarse de MAX_PIXELS."""
+def fit_grid(aspect_wh: float, longest_mm: float, res_mm: float, max_pixels: int = MAX_PIXELS) -> tuple[int, int, float]:
+    """Tamaño de la grilla (w, h) y resolución final, sin pasarse de `max_pixels`."""
     if aspect_wh >= 1:
         w_mm, h_mm = longest_mm, longest_mm / aspect_wh
     else:
         w_mm, h_mm = longest_mm * aspect_wh, longest_mm
-    res = max(res_mm, math.sqrt(w_mm * h_mm / MAX_PIXELS))
+    res = max(res_mm, math.sqrt(w_mm * h_mm / max_pixels))
     return max(2, round(w_mm / res)), max(2, round(h_mm / res)), res
+
+
+def max_pixels(params: dict) -> int:
+    """Tope de píxeles de la grilla según el parámetro «detalle_max» (millones)."""
+    return int(max(0.2, _p(params, "detalle_max", MAX_PIXELS / 1e6)) * 1e6)
 
 
 def resample(arr: np.ndarray, w: int, h: int) -> np.ndarray:
@@ -120,9 +135,9 @@ def disk(shape: tuple[int, int], cy: float, cx: float, r: float) -> np.ndarray:
     return (yy - cy) ** 2 + (xx - cx) ** 2 <= r * r
 
 
-def solid_silhouette(mask: np.ndarray, keep: str = "todo") -> np.ndarray:
+def solid_silhouette(mask: np.ndarray, keep: str = "todo", sigma: float = 0.9) -> np.ndarray:
     """Silueta limpia: contorno suavizado (sin escalones) y, por defecto, todos los objetos."""
-    soft = ndimage.gaussian_filter(np.asarray(mask, np.float32), 0.9)
+    soft = ndimage.gaussian_filter(np.asarray(mask, np.float32), max(sigma, 0.0))
     m = soft > 0.5
     m = proc.keep_components(m, 0.004) if keep == "todo" else proc.largest_component(m)
     m = ndimage.binary_closing(m, iterations=2)
@@ -201,7 +216,7 @@ def badge_mask(shape: str, w: int, h: int) -> np.ndarray:
 
 def _subject_layers(src: Source, w: int, h: int, params: dict, res: float) -> tuple[np.ndarray, np.ndarray]:
     """Máscara del sujeto y relieve normalizado [0,1] a tamaño de grilla."""
-    subj = solid_silhouette(resample(src.cut_mask, w, h))
+    subj = solid_silhouette(resample(src.cut_mask, w, h), sigma=_p(params, "contorno_suave", 0.2) / res)
     rel = resample(src.relief_map(_p(params, "fuente", "profundidad")), w, h)
     inside = rel[subj]
     if inside.size:
@@ -213,9 +228,11 @@ def _subject_layers(src: Source, w: int, h: int, params: dict, res: float) -> tu
     sigma = _p(params, "suavizado", 0.6)
     if sigma > 0:
         rel = ndimage.gaussian_filter(rel, sigma)
+    rel = proc.local_contrast(rel, _p(params, "contraste_local", 0.0))
     detail = _p(params, "detalle", 0.35)
     if detail > 0:  # ojos, bordes y texturas de la foto que la profundidad sola aplana
-        rel = np.clip(rel + detail * 0.22 * resample(src.detail_map(), w, h), 0, 1)
+        size = DETAIL_SIGMA.get(_p(params, "tamano_detalle", "medio"), 3.0)
+        rel = np.clip(rel + detail * 0.22 * resample(src.detail_map(size), w, h), 0, 1)
     rel = bevel(rel, subj, _p(params, "bisel_mm", 0.8) / res)
     return subj, rel * subj
 
@@ -249,7 +266,7 @@ def _outline_or_badge(src: Source, params: dict, size_default: float) -> tuple[n
     border = _p(params, "borde_mm", 2.0)
     shape = _p(params, "contorno", "silueta")
     if shape == "silueta":
-        w, h, res = fit_grid(src.cut.width / src.cut.height, max(size - 2 * border, 5), res_mm)
+        w, h, res = fit_grid(src.cut.width / src.cut.height, max(size - 2 * border, 5), res_mm, max_pixels(params))
         pad = int(math.ceil(border / res)) + 2
         subj, rel = _subject_layers(src, w, h, params, res)
         subj = np.pad(subj, pad)
@@ -258,7 +275,7 @@ def _outline_or_badge(src: Source, params: dict, size_default: float) -> tuple[n
         outline = connect_islands(dilate(subj, border / res), max(2 * border / res, 3))
         return outline, subj, rel, res, border
     aspect = src.cut.width / src.cut.height if shape == "rectangulo" else 1.0
-    w, h, res = fit_grid(aspect, size, res_mm)
+    w, h, res = fit_grid(aspect, size, res_mm, max_pixels(params))
     outline = badge_mask(shape, w, h)
     subj, rel = _place_in(outline, src, params, border / res, res)
     return outline, subj, rel, res, border
@@ -359,11 +376,14 @@ def litofania(src: Source, params: dict) -> FormResult:
         width = _p(params, "ancho_mm", 100.0)
     height = width / aspect
     longest = max(width, height)
-    w, h, res = fit_grid(aspect, longest, res_mm)
+    w, h, res = fit_grid(aspect, longest, res_mm, max_pixels(params))
     lum = proc.luminance(img.resize((w, h), Image.LANCZOS))
+    lum = ndimage.gaussian_filter(lum, _p(params, "suavizado", 0.6))
+    lum = proc.local_contrast(lum, _p(params, "contraste_local", 0.0))
+    lum = proc.sharpen(lum, _p(params, "nitidez", 0.0))
+    lum = np.clip(lum, 0, 1) ** max(_p(params, "gamma", 1.0), 0.05)
     if _p(params, "invertir", False):
         lum = 1 - lum
-    lum = ndimage.gaussian_filter(lum, _p(params, "suavizado", 0.6))
     thick = t_min + (t_max - t_min) * (1 - lum)
     fp = int(round(frame / res))
     if fp > 0:
@@ -396,27 +416,22 @@ def pixel_art(src: Source, params: dict) -> FormResult:
     height = _p(params, "alto_mm", 2.0)
     plate = _p(params, "placa_mm", 1.2)
     with_bg = _p(params, "con_fondo", False)
+    space = _p(params, "espacio_color", "lab")
     tight = src.cut if with_bg else src.cut.crop(proc.bbox(src.cut_mask))  # sin margen: el tamaño es el del sujeto
     aspect = tight.width / tight.height
     cols, rows = (longest, max(2, round(longest / aspect))) if aspect >= 1 else (max(2, round(longest * aspect)), longest)
     cell = size / longest
-    small = tight.resize((cols, rows), Image.BOX)
-    rgb = np.asarray(small.convert("RGB"), dtype=np.float32)
-    alpha = np.asarray(small.getchannel("A"), dtype=np.float32) / 255
-    cells = np.ones((rows, cols), bool) if with_bg else alpha > 0.5
-    if not cells.any():
-        cells = np.ones((rows, cols), bool)
-    colors = rgb[cells]
-    k = max(1, min(n_colors, len(np.unique(colors.round(), axis=0))))
-    try:
-        centroids, labels = kmeans2(colors, k, minit="++", rng=7)
-    except TypeError:  # SciPy < 1.15
-        centroids, labels = kmeans2(colors, k, minit="++", seed=7)
-    label_grid = np.full((rows, cols), -1)
-    label_grid[cells] = labels
+    label_grid = None
+    if _p(params, "muestreo", "dominante") == "dominante":
+        label_grid, palette = _dominant_cells(tight, cols, rows, n_colors, space, with_bg)
+    if label_grid is None or not (label_grid >= 0).any():  # sujeto más fino que una celda: se promedia
+        label_grid, palette = _average_cells(tight, cols, rows, n_colors, space, with_bg)
+    if _p(params, "limpiar", True):
+        label_grid = _clean_isolated(label_grid)
+    cells = label_grid >= 0
     parts: list[Part] = []
     z0 = plate if plate > 0 else 0.0
-    order = np.argsort(centroids.sum(axis=1))
+    order = np.argsort(palette.sum(axis=1))
     for idx, ci in enumerate(order):
         m = label_grid == ci
         if not m.any():
@@ -424,7 +439,7 @@ def pixel_art(src: Source, params: dict) -> FormResult:
         top = np.full(m.shape, z0 + height)
         # "split": un píxel que toca a otro del mismo color solo por la esquina no cambia de color
         mesh = heightfield_solid(top, m, cell, bottom=z0, pinch="split")
-        color = tuple(int(c) for c in np.clip(centroids[ci], 0, 255))
+        color = tuple(int(c) for c in np.clip(palette[ci], 0, 255))
         parts.append(Part(f"color_{idx + 1}", mesh, color))
     if plate > 0:
         plate_mask = dilate(cells, 0.5)
@@ -437,6 +452,72 @@ def pixel_art(src: Source, params: dict) -> FormResult:
     return FormResult(parts, notes)
 
 
+def _cluster(rgb: np.ndarray, k: int, space: str) -> tuple[np.ndarray, np.ndarray]:
+    """Agrupa colores (N, 3) en k grupos; en Lab los grupos siguen lo que ve el ojo."""
+    data = rgb
+    if space == "lab":
+        from skimage import color as skcolor
+
+        data = skcolor.rgb2lab(np.clip(rgb, 0, 255).reshape(-1, 1, 3) / 255.0).reshape(-1, 3)
+    k = max(1, min(k, len(np.unique(rgb.round(), axis=0))))
+    rng = np.random.default_rng(7)
+    sample = data if len(data) <= 60_000 else data[rng.choice(len(data), 60_000, replace=False)]
+    try:
+        centroids, _ = kmeans2(sample, k, minit="++", rng=7)
+    except TypeError:  # SciPy < 1.15
+        centroids, _ = kmeans2(sample, k, minit="++", seed=7)
+    labels, _ = vq(data, centroids)
+    # color real de cada grupo: promedio en RGB de sus píxeles (no el centroide en Lab)
+    palette = np.array([rgb[labels == i].mean(axis=0) if (labels == i).any() else [0, 0, 0] for i in range(len(centroids))])
+    return labels, palette
+
+
+def _average_cells(img: Image.Image, cols: int, rows: int, k: int, space: str, with_bg: bool) -> tuple[np.ndarray, np.ndarray]:
+    """Cada celda toma el promedio de su zona (colores suaves, mezcla en los bordes)."""
+    small = img.resize((cols, rows), Image.BOX)
+    rgb = np.asarray(small.convert("RGB"), dtype=np.float32)
+    alpha = np.asarray(small.getchannel("A"), dtype=np.float32) / 255
+    cells = np.ones((rows, cols), bool) if with_bg else alpha > 0.5
+    if not cells.any():
+        cells = np.ones((rows, cols), bool)
+    labels, palette = _cluster(rgb[cells], k, space)
+    grid = np.full((rows, cols), -1)
+    grid[cells] = labels
+    return grid, palette
+
+
+def _dominant_cells(img: Image.Image, cols: int, rows: int, k: int, space: str, with_bg: bool, sub: int = 6) -> tuple[np.ndarray, np.ndarray]:
+    """Cada celda toma el color que más ocupa su zona: bordes nítidos, sin colores mezclados."""
+    big = img.resize((cols * sub, rows * sub), Image.BOX)
+    rgb = np.asarray(big.convert("RGB"), dtype=np.float32)
+    alpha = np.asarray(big.getchannel("A"), dtype=np.float32) / 255
+    solid = np.ones(alpha.shape, bool) if with_bg else alpha > 0.5
+    if not solid.any():
+        solid = np.ones(alpha.shape, bool)
+    labels, palette = _cluster(rgb[solid], k, space)
+    full = np.full(alpha.shape, -1)
+    full[solid] = labels
+    blocks = full.reshape(rows, sub, cols, sub).transpose(0, 2, 1, 3).reshape(rows, cols, sub * sub)
+    counts = np.stack([(blocks == i).sum(axis=-1) for i in range(len(palette))], axis=-1)
+    grid = np.argmax(counts, axis=-1)
+    covered = (blocks >= 0).mean(axis=-1)
+    grid[covered < (0.0 if with_bg else 0.5)] = -1
+    return grid, palette
+
+
+def _clean_isolated(grid: np.ndarray) -> np.ndarray:
+    """Un píxel sin ningún vecino de su color toma el color más común a su alrededor."""
+    pad = np.pad(grid, 1, constant_values=-1)
+    nb = np.stack([pad[:-2, 1:-1], pad[2:, 1:-1], pad[1:-1, :-2], pad[1:-1, 2:]], axis=-1)
+    alone = (grid >= 0) & ~(nb == grid[..., None]).any(axis=-1)
+    out = grid.copy()
+    for y, x in zip(*np.nonzero(alone)):
+        around = nb[y, x][nb[y, x] >= 0]
+        if len(around):
+            out[y, x] = np.bincount(around).argmax()
+    return out
+
+
 def cortador(src: Source, params: dict) -> FormResult:
     size = _p(params, "tamano_mm", 80.0)
     wall = _p(params, "pared_mm", 1.0)
@@ -444,9 +525,10 @@ def cortador(src: Source, params: dict) -> FormResult:
     flange = _p(params, "pestana_mm", 4.0)
     flange_h = _p(params, "pestana_alto_mm", 2.0)
     res_mm = _p(params, "resolucion_mm", 0.2)
-    w, h, res = fit_grid(src.cut.width / src.cut.height, size, res_mm)
+    w, h, res = fit_grid(src.cut.width / src.cut.height, size, res_mm, max_pixels(params))
     subj = solid_silhouette(resample(src.cut_mask, w, h))
-    subj = ndimage.binary_opening(subj, iterations=max(1, int(1.5 / res)))
+    # quita salientes más finos que el detalle mínimo: el filo no los puede seguir
+    subj = ndimage.binary_opening(subj, iterations=max(1, int(_p(params, "detalle_min_mm", 1.5) / res)))
     pad = int(math.ceil((wall + flange) / res)) + 2
     subj = np.pad(subj, pad)
     blade = dilate(subj, wall / res) & ~subj

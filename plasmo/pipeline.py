@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import random
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,7 @@ from scipy.spatial import cKDTree
 
 from plasmo import generators
 from plasmo.config import Settings
+from plasmo.imaging import downloads
 from plasmo.imaging import processing as proc
 from plasmo.jobs import Job
 from plasmo.mesh import color as paint
@@ -96,6 +98,22 @@ def segment_project(store: ProjectStore, pid: str, model_key: str, objects: str 
     return result
 
 
+def _prepare_depth(src: forms.Source, params: dict, job: Job) -> None:
+    """Elige el modelo y la resolución de profundidad, y lo descarga con progreso si falta."""
+    if src.depth_model == "luminancia":  # en Ajustes se pidió no usar modelo
+        return
+    src.depth_model = downloads.DEPTH_MODELS.get(params.get("modelo_profundidad"), src.depth_model)
+    src.depth_side = max(196, min(1512, int(params.get("resolucion_profundidad") or proc.DEPTH_LONG_SIDE)))
+    if src.depth_model in downloads.CATALOG and not downloads.is_downloaded(src.depth_model):
+        label = downloads.CATALOG[src.depth_model].label
+        try:
+            downloads.download(src.depth_model, lambda done, total: job.update(
+                "profundidad", 0.6 * done / total if total else 0, f"Descargando {label}: {done / 1e6:.0f} / {total / 1e6:.0f} MB"))
+        except Exception:
+            pass  # relief_map cae al modelo pequeño y lo anota
+    job.update("profundidad", 0.65, "Calculando la profundidad…")
+
+
 def _next_version(store: ProjectStore, pid: str, form: str) -> tuple[str, Path]:
     meta = store.meta(pid)
     n = len(meta.get("versiones") or []) + 1
@@ -154,6 +172,52 @@ def _maybe_split(parts: list[forms.Part], settings: Settings, opts: dict) -> tup
     return out, [f"Dividida en {len(out)} partes para que quepan en la cama ({bed[0]:.0f}×{bed[1]:.0f}×{bed[2]:.0f} mm)."]
 
 
+class _Attempt:
+    """Reparte la barra de la fase entre varios intentos de la IA."""
+
+    def __init__(self, job: Job, index: int, total: int):
+        self.job, self.index, self.total = job, index, total
+        self.cancel_event = job.cancel_event
+
+    def update(self, key: str, fraction: float, detail: str = "") -> None:
+        label = f"Intento {self.index + 1} de {self.total}" + (f" · {detail}" if detail else "")
+        self.job.update(key, (self.index + fraction) / self.total, label)
+
+    def check(self) -> None:
+        self.job.check()
+
+    def _phase(self, key: str):
+        return self.job._phase(key)
+
+
+def _generate_best(gen, square: Image.Image, job: Job, src: forms.Source, folder: Path, params: dict) -> tuple[bytes, list[str]]:
+    """Genera con una o varias semillas y se queda con la figura cuya silueta más se parece a la foto."""
+    tries = max(1, min(6, int(params.get("intentos") or 1)))
+    seed0 = int(params.get("semilla") or 0) or random.randint(1, 2**31 - 8)
+    if tries == 1:
+        glb = gen.generate(square, job, "generar", {**params, "semilla": seed0})
+        return glb, [f"Semilla {seed0}: ponla en «Semilla» para repetir esta misma figura."]
+    best: tuple[bytes, float, int] | None = None
+    scores = []
+    for i in range(tries):
+        seed = seed0 + i
+        glb = gen.generate(square, _Attempt(job, i, tries), "generar", {**params, "semilla": seed, "liberar_vram": i == tries - 1})
+        (folder / f"ia-intento-{i + 1}.glb").write_bytes(glb)
+        try:
+            raw = pr.y_up_to_z_up(trimesh.load(io.BytesIO(glb), file_type="glb", force="mesh"))
+            score = paint.fit_score(raw.vertices, src.cut_mask)[1]
+        except Exception:
+            score = 0.0
+        scores.append(f"{score:.0%}")
+        if best is None or score > best[1]:
+            best = (glb, score, seed)
+    glb, score, seed = best
+    return glb, [
+        f"Probé {tries} semillas ({', '.join(scores)} de parecido con la silueta) y me quedé con la {seed} ({score:.0%}).",
+        f"Semilla {seed}: ponla en «Semilla» con 1 intento para repetir esta misma figura.",
+    ]
+
+
 def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, form: str, params: dict, opts: dict) -> dict:
     if form != "figura" and form not in forms.FORMS:
         raise ValueError(f"Forma desconocida: {form}")
@@ -173,10 +237,12 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
         job.done("liberar_vram")
 
         job.start("generar", "Generando con IA…")
-        square = proc.square_on_background(src.cut, 1024)
+        cut = proc.enhance_for_ai(src.cut) if params.get("realzar") else src.cut
+        fill = max(0.6, min(0.98, float(params.get("encuadre") or 85) / 100))
+        square = proc.square_on_background(cut, 1024, fill=fill)
         square.save(folder / "entrada-ia.png")
-        gen = generators.get(settings)
-        glb = gen.generate(square, job, "generar", params)
+        glb, more = _generate_best(generators.get(settings), square, job, src, folder, params)
+        notes += more
         (folder / "ia-crudo.glb").write_bytes(glb)
         job.done("generar")
 
@@ -187,13 +253,27 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
 
         job.start("reparar")
         if opts.get("reparar", True):
-            mesh, log = pr.repair(mesh, voxel_res=int(opts.get("voxeles", 384)))
+            # engrosar se pide en mm de la pieza final, pero aquí la malla sigue en las unidades de la IA
+            size = float(opts.get("tamano_mm") or 100)
+            ref = float(mesh.extents[2] if opts.get("eje", "alto") == "alto" else mesh.extents.max())
+            grow_mm = float(opts.get("engrosar_mm") or 0)
+            mesh, log = pr.repair(
+                mesh,
+                min_part_ratio=float(opts.get("fragmentos", 2)) / 100,
+                voxel_res=int(opts.get("voxeles", 512)),
+                force_voxel=bool(opts.get("solida", False)),
+                grow=grow_mm * ref / size if size > 0 else 0.0,
+            )
             notes += log
+            if grow_mm > 0:
+                notes.append(f"Engrosé la superficie {grow_mm:.1f} mm para que las partes finas aguanten.")
         level = opts.get("pulido", "suave")
-        if level in ("suave", "fuerte"):
+        if level in ("suave", "medio", "fuerte"):
             pr.polish(mesh, level)
             notes.append(f"Pulido {level} de la superficie (Taubin, sin encoger la pieza).")
-        mesh = pr.simplify(mesh, int(opts.get("caras_max", 500_000)))
+        max_faces = int(opts.get("caras_max", 1_000_000))
+        if max_faces > 0:
+            mesh = pr.simplify(mesh, max_faces)
         job.done("reparar")
 
         job.start("imprimir")
@@ -202,8 +282,10 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
     else:
         job.start("profundidad")
         if form in USES_DEPTH and params.get("fuente", "profundidad") == "profundidad":
+            _prepare_depth(src, params, job)
             src.relief_map("profundidad")
-            if src.depth_model == "luminancia":
+            notes += src.notes
+            if src.depth_model == "luminancia" and not src.notes:
                 notes.append("Sin modelo de profundidad: usé la luminancia de la foto.")
             job.done("profundidad")
         else:
@@ -216,8 +298,10 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
         job.done("construir")
 
         job.start("simplificar")
+        max_faces = int(opts.get("caras_max", 500_000))
         for i, part in enumerate(parts):
-            part.mesh = pr.simplify(part.mesh, int(opts.get("caras_max", 250_000)))
+            if max_faces > 0:
+                part.mesh = pr.simplify(part.mesh, max_faces)
             job.update("simplificar", (i + 1) / len(parts))
         job.done("simplificar")
 
