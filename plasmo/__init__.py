@@ -1,6 +1,6 @@
 """Plasmo: de una imagen a una pieza lista para imprimir en 3D, todo local."""
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 
 def _use_system_certificates() -> None:
