@@ -36,7 +36,7 @@ No hace falta un modelo aparte para el chat: el mismo `qwen3.5:9b` sirve. Plasmo
 
 ## 2. ComfyUI + Hunyuan3D 2.1: la figura 3D
 
-1. Descarga **ComfyUI portable** (v0.42.1 o más nueva): [`ComfyUI_windows_portable_nvidia.7z`](https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z) (unos 2 GB). Extráelo con 7-Zip en `D:\IA\ComfyUI_windows_portable`.
+1. Descarga **ComfyUI portable** (v0.43 o más nueva, la que trae los nodos de IDOL): [`ComfyUI_windows_portable_nvidia.7z`](https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z) (unos 2 GB). Extráelo con 7-Zip en `D:\IA\ComfyUI_windows_portable`.
    - No uses la build `_cu126`: es para tarjetas serie 10 o más viejas.
 2. Descarga el checkpoint y ponlo en `ComfyUI\models\checkpoints\`:
 
@@ -58,6 +58,38 @@ ModelSamplingAuraFlow (shift 1.0) + EmptyLatentHunyuan3Dv2 (4096) → KSampler (
 ```
 
 Con el checkpoint 2.0, Plasmo usa los valores de su plantilla: 3072, 20 pasos y cfg 8.
+
+## 2b. *(Opcional)* IDOL: la figura completa, a color
+
+[IDOL](https://github.com/speridlabs/idol-sdk) de speridlabs (Apache-2.0) arma el objeto con gaussianas, también la espalda que la foto no muestra, y trae sus colores. Plasmo lo instala solo, **dentro de tu ComfyUI**: no hace falta PyTorch aparte ni cuenta de Hugging Face.
+
+1. Abre **Ajustes → IDOL** y pulsa **Descargar e instalar (4,7 GB)**. Plasmo:
+   - enciende ComfyUI si está apagado;
+   - si tu ComfyUI es anterior a la **0.43**, lo actualiza con su `update\update_comfyui.bat` (solo en el portable; en otros, actualízalo tú);
+   - pone los nodos [ComfyUI-Idol](https://github.com/PedroMarinhoDev/ComfyUI-Idol) en `ComfyUI\custom_nodes` (fijados a un commit revisado, sin `pip install`);
+   - baja los cuatro modelos públicos. Si la descarga se corta, al volver a pulsar sigue donde quedó.
+
+   | Archivo | Carpeta | Tamaño |
+   |---|---|---|
+   | `idol_fp32.safetensors` | `models\diffusion_models` | 1,48 GB |
+   | `idol_vae_decoder_fp32.safetensors` | `models\vae` | 1,15 GB |
+   | `dino_v3_vit_h.safetensors` | `models\clip_vision` | 1,68 GB |
+   | `flux2-vae.safetensors` | `models\vae` | 0,34 GB |
+
+2. Si Plasmo no encendió ComfyUI, reinícialo para que cargue los nodos nuevos.
+3. En la forma **Figura 3D (IA)** elige **Modelo 3D → IDOL**. El recorte lo pone Plasmo, así que no hace falta el BiRefNet de ComfyUI.
+
+Plasmo arma este grafo:
+
+```
+LoadImage (recorte con alfa) → InvertMask → Idol Preprocess Image (real o synthetic)
+CLIPVisionLoader (DINOv3) + VAELoader (FLUX.2) → TripoSplat Conditioning
+UNETLoader (idol_fp32) → Idol Precision → KSampler (50 pasos, cfg 4, euler/simple)
+→ TripoSplat Decode (262 mil gaussianas) → Extract Mesh from Splat (malla a color) → SaveGLB
+                                          → SplatToFile3D (.ply) → SaveGLB
+```
+
+IDOL decide solo hacia dónde mira el objeto. Por eso Plasmo prueba los giros y se queda con el que calca la silueta y los colores de la foto. El splat original también se puede bajar como `.ply`.
 
 ## 3. *(Opcional)* Texto → imagen → 3D
 
@@ -84,7 +116,7 @@ Abre Plasmo. Las dos píldoras de arriba deben estar en verde: **Ollama · qwen3
 | Momento | Quién la usa |
 |---|---|
 | Analizar la foto o chatear | Ollama, ~8 GB |
-| Generar la figura | Plasmo descarga Ollama (`keep_alive: 0`) y entra Hunyuan3D 2.1, ~10 GB |
+| Generar la figura | Plasmo descarga Ollama (`keep_alive: 0`) y entra Hunyuan3D 2.1, ~10 GB, o IDOL, ~7 GB |
 | Al terminar | Plasmo llama a `POST /free` en ComfyUI para devolver la VRAM |
 
 El recorte del fondo y la profundidad corren en la CPU (ONNX), así que no compiten por la GPU.

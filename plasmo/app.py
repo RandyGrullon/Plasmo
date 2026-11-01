@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from PIL import Image
 
-from plasmo import __version__, catalog, generators, pipeline
+from plasmo import __version__, catalog, generators, idol, pipeline
 from plasmo.config import ConfigStore
 from plasmo.engines import ENGINES, NAMES, EngineManager, start_many
 from plasmo.imaging import downloads
@@ -213,7 +213,11 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
             raise HTTPException(404, "Proyecto no encontrado")
         if form == "figura":
             st = generators.get(settings()).status()
-            if not st.get("ok"):
+            if (body.get("parametros") or {}).get("modelo_3d") == "idol":
+                idol_st = st.get("idol") or {}
+                if not idol_st.get("listo"):
+                    raise HTTPException(409, idol_st.get("mensaje") or "IDOL no está instalado: instálalo en Ajustes → IDOL.")
+            elif not st.get("ok"):
                 raise HTTPException(409, st.get("mensaje") or "El generador 3D no está disponible.")
         s = settings()
         job = manager.submit(
@@ -331,6 +335,14 @@ def create_app(config: ConfigStore | None = None, jobs: JobManager | None = None
     async def motores_apagar(request: Request):
         names = pick_engines(await request.json() if request.headers.get("content-length") not in (None, "0") else {})
         return {n: motores.stop(n) for n in names}
+
+    # ----------------------------------------------------------------- IDOL
+    @app.post("/api/idol/instalar")
+    def idol_instalar():
+        s = settings()
+        if s.generator != "comfyui":
+            raise HTTPException(409, "IDOL se instala en ComfyUI: elige ComfyUI como generador 3D en Ajustes.")
+        return manager.submit("idol", idol.PHASES, lambda job: idol.install(s, motores, job)).to_dict()
 
     # ------------------------------------------------------------ descargas
     @app.post("/api/ollama/descargar")

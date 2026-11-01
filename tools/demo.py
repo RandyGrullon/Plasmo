@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
@@ -19,8 +20,14 @@ from pathlib import Path
 ROOT = Path(tempfile.gettempdir()) / "plasmo-demo"
 TOOLS = Path(__file__).resolve().parent
 os.environ["PLASMO_CONFIG_DIR"] = str(ROOT / "config")
+# el ComfyUI simulado guarda ahí sus carpetas: cada demo empieza sin IDOL instalado
+os.environ["PLASMO_MOCK_COMFY_DIR"] = str(ROOT / "comfyui")
+os.environ.setdefault("PLASMO_MOCK_FAKE_KB", "6144")  # modelos de 6 MB y algo lentos, para ver la barra
+os.environ.setdefault("PLASMO_MOCK_DELAY", "0.04")
+shutil.rmtree(ROOT / "comfyui", ignore_errors=True)
 sys.path.insert(0, str(TOOLS.parent))
 
+from plasmo import idol  # noqa: E402
 from tools import mock_comfyui, mock_ollama  # noqa: E402
 
 
@@ -62,6 +69,10 @@ def main() -> int:
         "comfy_comando": mock_cmd("mock_comfyui.py", "--port", str(COMFY_PORT), "--paso", "0.18", "--arranque", "6") if engines_off else "",
     })
     cfg_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    # «Instalar IDOL» baja del simulador un paquete y modelos de mentira, no los 4,7 GB reales
+    comfy = f"http://127.0.0.1:{COMFY_PORT}"
+    idol.PACK_URL = f"{comfy}/descargas/ComfyUI-Idol.zip"
+    idol.MODELS[:] = mock_comfyui.fake_models(comfy)
     if engines_off:
         print(f"Demo con motores apagados (Ollama :{OLLAMA_PORT}, ComfyUI :{COMFY_PORT}) · datos en {ROOT}", flush=True)
     else:

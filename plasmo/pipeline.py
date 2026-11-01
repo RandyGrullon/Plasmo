@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import random
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -123,7 +124,8 @@ def _next_version(store: ProjectStore, pid: str, form: str) -> tuple[str, Path]:
     return name, path
 
 
-def _prepare_figure(mesh: trimesh.Trimesh, opts: dict, src: forms.Source) -> tuple[list[forms.Part], list[str]]:
+def _prepare_figure(mesh: trimesh.Trimesh, opts: dict, src: forms.Source,
+                    own_colors: tuple[np.ndarray, np.ndarray] | None = None) -> tuple[list[forms.Part], list[str]]:
     notes: list[str] = []
     pr.place_on_bed(mesh)
     pr.scale_to(mesh, float(opts.get("tamano_mm") or 100), opts.get("eje", "alto"))
@@ -140,7 +142,13 @@ def _prepare_figure(mesh: trimesh.Trimesh, opts: dict, src: forms.Source) -> tup
         base_top = base_mm + 0.05
         notes.append(f"Base {base} de {base_mm:.0f} mm.")
     vertex_colors = None
-    if opts.get("color", True):
+    if opts.get("color", True) and own_colors is not None:
+        try:
+            vertex_colors = paint.transfer_colors(*own_colors, mesh, base_top)
+            notes.append("Pinté la figura con los colores de IDOL: todo el contorno, también la espalda.")
+        except Exception as exc:
+            notes.append(f"No pude pasarle los colores de IDOL: {exc}")
+    if opts.get("color", True) and vertex_colors is None:
         # se pinta mientras la figura todavía mira al frente (antes de girarla)
         try:
             body = mesh.vertices if base_top is None else mesh.vertices[mesh.vertices[:, 2] >= base_top]
@@ -190,32 +198,73 @@ class _Attempt:
         return self.job._phase(key)
 
 
-def _generate_best(gen, square: Image.Image, job: Job, src: forms.Source, folder: Path, params: dict) -> tuple[bytes, list[str]]:
+@dataclass
+class _AiFigure:
+    glb: bytes
+    mesh: trimesh.Trimesh  # ya parada (Z arriba) y, con IDOL, girada para mirar como en la foto
+    colors: np.ndarray | None  # colores propios del modelo (IDOL), en el orden de los vértices
+    score: float  # parecido de la silueta con la foto (0–1)
+    seed: int
+    yaw: float | None = None
+    extras: dict[str, bytes] | None = None
+
+
+def _load_ai(glb: bytes, src: forms.Source, model3d: str) -> tuple[trimesh.Trimesh, np.ndarray | None, float, float | None]:
+    loaded = trimesh.load(io.BytesIO(glb), file_type="glb", force="mesh")
+    colors = None
+    if model3d == "idol":
+        vc = getattr(loaded.visual, "vertex_colors", None)
+        if vc is not None and len(vc) == len(loaded.vertices):
+            colors = paint.linear_to_srgb(np.asarray(vc))  # ComfyUI los guarda lineales
+    mesh = pr.y_up_to_z_up(loaded)
+    if model3d != "idol":
+        return mesh, None, paint.fit_score(mesh.vertices, src.cut_mask)[1], None
+    yaw, score = paint.orient_to_photo(mesh, colors, src.cut)
+    pr.rotate_z(mesh, yaw)  # los colores siguen a los vértices: el orden no cambia
+    return mesh, colors, score, yaw
+
+
+def _generate_best(gen, image: Image.Image, job: Job, src: forms.Source, folder: Path, params: dict) -> tuple[_AiFigure, list[str]]:
     """Genera con una o varias semillas y se queda con la figura cuya silueta más se parece a la foto."""
+    model3d = params.get("modelo_3d", "hunyuan")
     tries = max(1, min(6, int(params.get("intentos") or 1)))
     seed0 = int(params.get("semilla") or 0) or random.randint(1, 2**31 - 8)
-    if tries == 1:
-        glb = gen.generate(square, job, "generar", {**params, "semilla": seed0})
-        return glb, [f"Semilla {seed0}: ponla en «Semilla» para repetir esta misma figura."]
-    best: tuple[bytes, float, int] | None = None
+    best: _AiFigure | None = None
     scores = []
     for i in range(tries):
         seed = seed0 + i
-        glb = gen.generate(square, _Attempt(job, i, tries), "generar", {**params, "semilla": seed, "liberar_vram": i == tries - 1})
-        (folder / f"ia-intento-{i + 1}.glb").write_bytes(glb)
+        progress = job if tries == 1 else _Attempt(job, i, tries)
+        glb = gen.generate(image, progress, "generar", {**params, "semilla": seed, "liberar_vram": i == tries - 1})
+        extras = dict(getattr(gen, "extras", None) or {})
+        if tries > 1:
+            (folder / f"ia-intento-{i + 1}.glb").write_bytes(glb)
         try:
-            raw = pr.y_up_to_z_up(trimesh.load(io.BytesIO(glb), file_type="glb", force="mesh"))
-            score = paint.fit_score(raw.vertices, src.cut_mask)[1]
+            mesh, colors, score, yaw = _load_ai(glb, src, model3d)
         except Exception:
-            score = 0.0
+            if tries == 1:
+                raise
+            continue  # un intento roto no frena a los demás
         scores.append(f"{score:.0%}")
-        if best is None or score > best[1]:
-            best = (glb, score, seed)
-    glb, score, seed = best
-    return glb, [
-        f"Probé {tries} semillas ({', '.join(scores)} de parecido con la silueta) y me quedé con la {seed} ({score:.0%}).",
-        f"Semilla {seed}: ponla en «Semilla» con 1 intento para repetir esta misma figura.",
-    ]
+        if best is None or score > best.score:
+            best = _AiFigure(glb, mesh, colors, score, seed, yaw, extras)
+    if best is None:
+        raise RuntimeError("Ningún intento de la IA dio una malla que se pueda abrir.")
+    notes = [f"Semilla {best.seed}: ponla en «Semilla»{' con 1 intento' if tries > 1 else ''} para repetir esta misma figura."]
+    if tries > 1:
+        notes.insert(0, f"Probé {tries} semillas ({', '.join(scores)} de parecido con la silueta) y me quedé con la {best.seed} ({best.score:.0%}).")
+    if best.yaw is not None:
+        turned = min(best.yaw, 360 - best.yaw) > 3
+        notes.append(f"IDOL la dejó mirando a otro lado: la giré {best.yaw:.0f}° para que quede de frente como en la foto ({best.score:.0%} de parecido)."
+                     if turned else f"IDOL la dejó de frente, como en la foto ({best.score:.0%} de parecido).")
+    return best, notes
+
+
+def _photo_mode(params: dict, meta: dict) -> str:
+    """El encuadre de IDOL: «real» para fotos y «synthetic» para imágenes hechas por IA o renders."""
+    mode = params.get("modo_foto", "auto")
+    if mode in ("real", "synthetic"):
+        return mode
+    return "synthetic" if meta.get("prompt") else "real"
 
 
 def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, form: str, params: dict, opts: dict) -> dict:
@@ -237,18 +286,24 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
         job.done("liberar_vram")
 
         job.start("generar", "Generando con IA…")
+        model3d = "idol" if params.get("modelo_3d") == "idol" else "hunyuan"
         cut = proc.enhance_for_ai(src.cut) if params.get("realzar") else src.cut
-        fill = max(0.6, min(0.98, float(params.get("encuadre") or 85) / 100))
-        square = proc.square_on_background(cut, 1024, fill=fill)
-        square.save(folder / "entrada-ia.png")
-        glb, more = _generate_best(generators.get(settings), square, job, src, folder, params)
+        if model3d == "idol":
+            # IDOL encuadra solo a partir de la máscara: recibe el recorte con su transparencia
+            params = {**params, "modo_foto": _photo_mode(params, store.meta(pid))}
+            ai_input = cut
+        else:
+            fill = max(0.6, min(0.98, float(params.get("encuadre") or 85) / 100))
+            ai_input = proc.square_on_background(cut, 1024, fill=fill)
+        ai_input.save(folder / "entrada-ia.png")
+        best, more = _generate_best(generators.get(settings), ai_input, job, src, folder, params)
         notes += more
-        (folder / "ia-crudo.glb").write_bytes(glb)
+        (folder / "ia-crudo.glb").write_bytes(best.glb)
         job.done("generar")
 
         job.start("convertir")
-        loaded = trimesh.load(io.BytesIO(glb), file_type="glb", force="mesh")
-        mesh = pr.y_up_to_z_up(loaded)
+        mesh = best.mesh
+        own_colors = (mesh.vertices.copy(), best.colors) if best.colors is not None else None
         job.done("convertir")
 
         job.start("reparar")
@@ -277,7 +332,7 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
         job.done("reparar")
 
         job.start("imprimir")
-        parts, more = _prepare_figure(mesh, opts, src)
+        parts, more = _prepare_figure(mesh, opts, src, own_colors)
         notes += more
     else:
         job.start("profundidad")
@@ -324,6 +379,10 @@ def run_generation(job: Job, store: ProjectStore, settings: Settings, pid: str, 
     meta = store.meta(pid)
     stem = (meta.get("analisis") or {}).get("nombre_archivo") or meta.get("nombre") or "modelo"
     files = export.write_all(parts, folder, f"{stem}-{form}", stem)
+    if form == "figura" and (best.extras or {}).get("splat.ply"):
+        splat_name = f"{stem}-splat.ply"
+        (folder / splat_name).write_bytes(best.extras["splat.ply"])
+        files["splat"] = splat_name  # el splat de IDOL tal cual, para verlo en un visor de gaussianas
     info = {
         "version": version,
         "forma": form,

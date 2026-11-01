@@ -465,7 +465,14 @@ function fieldHtml(f, value, group) {
 // secciones de parámetros: las avanzadas empiezan plegadas y recuerdan si las abriste
 const openGroups = new Set();
 
+function shownField(f) {
+  if (!f.solo_si) return true;
+  const params = state.values[state.form]?.parametros || {};
+  return Object.entries(f.solo_si).every(([k, val]) => sameValue(params[k], val));
+}
+
 function groupsHtml(form, list, values, section) {
+  list = list.filter(shownField);
   const loose = list.filter((f) => !f.grupo);
   const parts = loose.length ? [`<div class="fields">${loose.map((f) => fieldHtml(f, values[f.clave], section)).join("")}</div>`] : [];
   for (const g of form.grupos || []) {
@@ -516,8 +523,11 @@ function renderProfiles() {
 function renderFields() {
   const form = state.forms.find((f) => f.clave === state.form);
   const v = state.values[state.form];
-  $("#fields").innerHTML = groupsHtml(form, form.parametros, v.parametros, "parametros");
+  $("#fields").innerHTML = idolNotice(form, v) + groupsHtml(form, form.parametros, v.parametros, "parametros");
   $("#print-fields").innerHTML = groupsHtml(form, form.impresion, v.impresion, "impresion");
+  hydrateIcons($("#fields"));
+  bindIdolButtons($("#fields"));
+  const deps = new Set([...form.parametros, ...form.impresion].flatMap((f) => Object.keys(f.solo_si || {})));
   $$("#fields details.sub, #print-fields details.sub").forEach((d) => d.addEventListener("toggle", () => {
     if (d.open) openGroups.add(d.dataset.grp);
     else openGroups.delete(d.dataset.grp);
@@ -529,19 +539,81 @@ function renderFields() {
     else if (def?.tipo === "opcion" && typeof def.defecto === "number") val = Number(val);
     state.values[state.form][el.dataset.g][el.dataset.k] = val;
     if (el.type === "number") el.value = val;
+    if (deps.has(el.dataset.k)) return renderFields(); // cambian las opciones que se muestran
     renderProfiles();
   }));
   renderProfiles();
 }
 
+// ------------------------------------------------------------------ IDOL
+function idolNotice(form, v) {
+  if (form.clave !== "figura" || v.parametros.modelo_3d !== "idol") return "";
+  const st = state.status?.generador?.idol;
+  if (st?.listo) return "";
+  return `<div class="idol-note"><div><b>IDOL no está listo.</b> <span class="muted small">${esc(st?.mensaje || "Instálalo con un clic: Plasmo pone los nodos y los modelos en tu ComfyUI.")}</span></div>
+    <button class="sm" data-idol-install data-icon="download">Instalar IDOL</button></div>`;
+}
+
+function idolRow(st = {}) {
+  const chip = st.listo ? `<span class="chip on">Instalado</span>` : `<span class="chip off">${st.responde === false ? "ComfyUI apagado" : "Sin instalar"}</span>`;
+  const size = st.falta_gb ?? st.descarga_gb ?? 4.7;
+  const action = st.listo ? "" : `<button class="sm" data-idol-install data-icon="download">Descargar e instalar (${String(size).replace(".", ",")} GB)</button>`;
+  return `<div class="grow"><b>IDOL</b> ${chip}<div class="muted small idol-msg">${esc(st.mensaje || "")}</div></div>${action}`;
+}
+
+function bindIdolButtons(root = document) {
+  $$("[data-idol-install]", root).forEach((b) => b.addEventListener("click", () => installIdol(b)));
+}
+
+async function installIdol(btn) {
+  if (state.idolInstalling) return toast("IDOL ya se está instalando: mira el avance en Ajustes → IDOL.");
+  state.idolInstalling = true;
+  const row = btn.closest(".model-row, .idol-note");
+  const msg = row?.querySelector(".idol-msg, .muted.small");
+  const bar = Object.assign(document.createElement("div"), { className: "bar mini-bar", innerHTML: "<i></i>" });
+  btn.replaceWith(bar);
+  try {
+    const job = await api("/api/idol/instalar", { method: "POST" });
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 800));
+      const j = await api(`/api/trabajos/${job.id}`);
+      bar.firstChild.style.width = `${j.porcentaje}%`;
+      if (msg) msg.textContent = `${Math.round(j.porcentaje)} % · ${j.mensaje || ""}`;
+      if (j.estado === "listo") {
+        (j.resultado.notas || []).forEach((n) => toast(n));
+        toast(j.resultado.idol.listo ? "IDOL quedó instalado: elige «IDOL» en Modelo 3D." : j.resultado.idol.mensaje, j.resultado.idol.listo ? "ok" : "");
+        break;
+      }
+      if (j.estado === "error" || j.estado === "cancelado") throw new Error(j.error || "Instalación cancelada");
+    }
+  } catch (e) {
+    toast(e.message, "err");
+  } finally {
+    state.idolInstalling = false;
+    await refreshStatus();
+    const slot = $("#idol-row");
+    if (slot) {
+      slot.innerHTML = idolRow(state.status?.generador?.idol);
+      hydrateIcons(slot);
+      bindIdolButtons(slot);
+    }
+    if (state.form === "figura") renderFields();
+  }
+}
+
 async function generate() {
   if (!state.project) return;
   const form = state.forms.find((f) => f.clave === state.form);
-  if (form.requiere === "generador" && !state.status?.generador?.ok) {
-    await refreshStatus();
-    if (!state.status?.generador?.ok) return toast(state.status?.generador?.mensaje || "El generador 3D no está disponible.", "err");
-  }
   const v = state.values[state.form];
+  const usesIdol = form.clave === "figura" && v.parametros.modelo_3d === "idol";
+  const ready = () => (usesIdol ? state.status?.generador?.idol?.listo : state.status?.generador?.ok);
+  if (form.requiere === "generador" && !ready()) {
+    await refreshStatus();
+    if (!ready()) {
+      const g = state.status?.generador;
+      return toast((usesIdol ? g?.idol?.mensaje : g?.mensaje) || "El generador 3D no está disponible.", "err");
+    }
+  }
   const btn = $("#btn-generate");
   btn.disabled = true;
   btn.classList.add("busy");
@@ -620,7 +692,7 @@ function renderReport(v) {
       ${r.nota_paredes ? `<li class="nota">${esc(r.nota_paredes)}</li>` : ""}
     </ul>
     <div class="exports">
-      ${dl("3mf", "3MF")}${dl("stl", "STL")}${dl("obj", "OBJ")}${dl("obj_color", "OBJ a color")}${dl("zip", "Piezas (ZIP)")}
+      ${dl("3mf", "3MF")}${dl("stl", "STL")}${dl("obj", "OBJ")}${dl("obj_color", "OBJ a color")}${dl("zip", "Piezas (ZIP)")}${dl("splat", "Splat (.ply)")}
       <button class="sm" id="open-slicer" data-icon="slicer">Abrir en el slicer</button>
       <button class="sm" id="open-folder" data-icon="folder">Abrir carpeta</button>
     </div>`;
@@ -727,6 +799,13 @@ async function openSettings() {
         ${ckpts.includes(c.archivo) ? `<span class="chip">Instalado</span>` : `<a href="${esc(c.url)}" target="_blank" rel="noopener"><button class="sm" data-icon="download">Enlace</button></a>`}</div>`).join("")}
     </section>
     <section>
+      <h3>IDOL · una foto a 3D con gaussianas</h3>
+      <p class="muted small" style="margin:0 0 8px">Modelo de <a href="https://github.com/speridlabs/idol-sdk" target="_blank" rel="noopener">speridlabs</a> (Apache-2.0)
+        que arma el objeto completo, también la espalda, con sus colores. Corre dentro de tu ComfyUI (0.43 o más) con unos 7 GB de VRAM.
+        El botón instala los nodos <a href="https://github.com/PedroMarinhoDev/ComfyUI-Idol" target="_blank" rel="noopener">ComfyUI-Idol</a> y baja los modelos; si tu ComfyUI portable es viejo, lo actualiza.</p>
+      <div class="model-row" id="idol-row">${idolRow(g.idol)}</div>
+    </section>
+    <section>
       <h3>Recorte y profundidad (corren en CPU)</h3>
       <div class="grid2">
         <div class="field"><label>Quitar fondo con</label><select id="s-bg">
@@ -763,6 +842,7 @@ async function openSettings() {
   }));
   $$("[data-pull]").forEach((b) => b.addEventListener("click", () => downloadJob(b, "/api/ollama/descargar", { modelo: b.dataset.pull })));
   $$("[data-onnx]").forEach((b) => b.addEventListener("click", () => downloadJob(b, "/api/onnx/descargar", { clave: b.dataset.onnx })));
+  bindIdolButtons($("#settings-body"));
   if (!$("#settings").open) $("#settings").showModal();
 }
 

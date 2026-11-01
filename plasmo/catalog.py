@@ -2,29 +2,37 @@
 
 Cada parámetro pertenece a un grupo (se muestran como secciones) y cada forma
 trae perfiles de calidad que cambian varios parámetros de un clic. Los valores
-por defecto son los del perfil «Máxima».
+por defecto son los del perfil «Máxima». `solo_si` muestra un parámetro solo
+cuando otro tiene cierto valor (por ejemplo, las opciones de IDOL).
 """
 
 from __future__ import annotations
 
 
-def num(key, label, default, lo, hi, step=0.1, unit="mm", hint="", group=""):
-    return {"clave": key, "nombre": label, "tipo": "numero", "defecto": default, "min": lo, "max": hi, "paso": step, "unidad": unit,
-            "ayuda": hint, "grupo": group}
+def _when(field: dict, when: dict | None) -> dict:
+    if when:
+        field["solo_si"] = when
+    return field
 
 
-def choice(key, label, default, options, hint="", group=""):
-    return {"clave": key, "nombre": label, "tipo": "opcion", "defecto": default, "opciones": options, "ayuda": hint, "grupo": group}
+def num(key, label, default, lo, hi, step=0.1, unit="mm", hint="", group="", when=None):
+    return _when({"clave": key, "nombre": label, "tipo": "numero", "defecto": default, "min": lo, "max": hi, "paso": step, "unidad": unit,
+                  "ayuda": hint, "grupo": group}, when)
 
 
-def flag(key, label, default, hint="", group=""):
-    return {"clave": key, "nombre": label, "tipo": "si_no", "defecto": default, "ayuda": hint, "grupo": group}
+def choice(key, label, default, options, hint="", group="", when=None):
+    return _when({"clave": key, "nombre": label, "tipo": "opcion", "defecto": default, "opciones": options, "ayuda": hint, "grupo": group}, when)
+
+
+def flag(key, label, default, hint="", group="", when=None):
+    return _when({"clave": key, "nombre": label, "tipo": "si_no", "defecto": default, "ayuda": hint, "grupo": group}, when)
 
 
 # clave → (título, plegado al abrir)
 GRUPOS = {
     "calidad": ("Calidad", False),
     "foto": ("Foto para la IA", False),
+    "idol": ("IDOL", False),
     "muestreo": ("Muestreo avanzado", True),
     "forma": ("Forma", False),
     "relieve": ("Relieve", False),
@@ -71,28 +79,51 @@ RELIEF_COMMON = [
     choice("detalle_max", "Detalle máximo", 1.5, DETALLE_MAX, DETALLE_MAX_AYUDA, "profundidad"),
 ]
 
+HUNYUAN = {"modelo_3d": "hunyuan"}
+IDOL = {"modelo_3d": "idol"}
+
 FIGURE_PARAMS = [
+    choice("modelo_3d", "Modelo 3D", "hunyuan", [["hunyuan", "Hunyuan3D 2.1 · malla directa"], ["idol", "IDOL · splat a color, 360°"]],
+           "Hunyuan3D saca la malla directo. IDOL (speridlabs) arma el objeto con gaussianas y trae los colores de todo el contorno; "
+           "se instala con un clic en Ajustes → IDOL.", "calidad"),
     choice("calidad", "Calidad", "maxima", [["maxima", "Máxima (más lenta)"], ["alta", "Alta"], ["rapida", "Rápida"]],
-           "Máxima: malla de 512 y 50 pasos. Tarda más, pero se parece más a la foto.", "calidad"),
+           "Máxima: Hunyuan3D con malla de 512 y 50 pasos; IDOL con malla de 512 y muestreo en fp32. Tarda más, pero se parece más a la foto.",
+           "calidad"),
     num("intentos", "Intentos (mejor de N)", 1, 1, 4, 1, "",
         "Genera varias figuras con semillas distintas y se queda con la que más se parece a la silueta de la foto. Cada intento suma el tiempo de una figura.",
         "calidad"),
-    num("encuadre", "Tamaño del sujeto", 85, 70, 95, 1, "%", "Cuánto del cuadro ocupa el sujeto en la imagen que recibe Hunyuan3D (85 % es lo de Tencent).", "foto"),
+    num("encuadre", "Tamaño del sujeto", 85, 70, 95, 1, "%", "Cuánto del cuadro ocupa el sujeto en la imagen que recibe Hunyuan3D (85 % es lo de Tencent).",
+        "foto", HUNYUAN),
+    choice("modo_foto", "Tipo de imagen", "auto", [["auto", "Automático"], ["real", "Foto real"], ["synthetic", "Render o imagen de IA"]],
+           "IDOL deja más margen alrededor en las fotos reales que en los renders. Automático: render si la imagen la creó Plasmo.", "foto", IDOL),
     flag("realzar", "Realzar la foto", False, "Contraste automático y nitidez suave antes de mandarla a la IA; ayuda con fotos lavadas o borrosas.", "foto"),
-    choice("algoritmo", "Superficie", "suave", [["suave", "Suave (surface net)"], ["rapido", "Rápida (escalonada)"]], group="muestreo"),
+    choice("gaussianas", "Gaussianas", 262_144,
+           [[131_072, "131 mil"], [262_144, "262 mil (recomendado)"], [524_288, "524 mil"], [1_048_576, "1 millón"]],
+           "Cuántas gaussianas forman el objeto. 262 mil es la densidad natural de IDOL; más lo hace más denso (más VRAM).", "idol", IDOL),
+    choice("resolucion_malla", "Resolución de la malla", 0,
+           [[0, "Según la calidad"], [256, "256"], [384, "384"], [512, "512"], [640, "640"], [768, "768 (lenta)"]],
+           "Grilla con la que se saca la malla del splat. Más alta = más detalle y más tiempo.", "idol", IDOL),
+    num("nivel_superficie", "Nivel de superficie", 0.4, 0.1, 1.5, 0.05, "",
+        "Dónde se corta la nube de gaussianas: más bajo deja la figura más gruesa y unida; más alto la afina (puede abrir huecos).", "idol", IDOL),
+    choice("precision_idol", "Precisión", "auto",
+           [["auto", "Según la calidad"], ["default", "fp16 (rápida)"], ["fp32, fp16 attention", "fp32 con atención fp16"], ["fp32", "fp32 completa (lenta)"]],
+           "Con qué precisión calcula el muestreo. fp32 completa reproduce el modelo original, unas 4 veces más lenta.", "idol", IDOL),
+    num("nitidez_color", "Nitidez del color", 2.0, 1, 8, 0.5, "", "Colores más definidos en la malla, sin cambiar la forma.", "idol", IDOL),
+    choice("algoritmo", "Superficie", "suave", [["suave", "Suave (surface net)"], ["rapido", "Rápida (escalonada)"]], group="muestreo", when=HUNYUAN),
     num("umbral", "Umbral de superficie", 0.6, 0.3, 0.9, 0.05, "",
-        "Más bajo engrosa la figura y recupera partes finas (orejas, colas, dedos); más alto la afina.", "muestreo"),
+        "Más bajo engrosa la figura y recupera partes finas (orejas, colas, dedos); más alto la afina.", "muestreo", HUNYUAN),
     choice("latentes", "Detalle de la forma", 0,
            [[0, "Según el modelo"], [3072, "3072"], [4096, "4096"], [6144, "6144 (experimental)"], [8192, "8192 (experimental)"]],
-           "Cuántos «tokens» describen la forma. Hunyuan3D 2.1 se entrenó con 4096: más puede sumar detalle o deformarla.", "muestreo"),
+           "Cuántos «tokens» describen la forma. Hunyuan3D 2.1 se entrenó con 4096: más puede sumar detalle o deformarla.", "muestreo", HUNYUAN),
     num("pasos", "Pasos de muestreo", 0, 0, 80, 1, "", "0 = según la calidad.", "muestreo"),
-    num("guia", "Guía (CFG)", 0, 0, 12, 0.5, "", "0 = la del modelo (2.1: 5 · 2.0: 8). Más alto se pega más a la foto, demasiado la deforma.", "muestreo"),
+    num("guia", "Guía (CFG)", 0, 0, 12, 0.5, "",
+        "0 = la del modelo (Hunyuan 2.1: 5 · 2.0: 8 · IDOL: 4). Más alto se pega más a la foto, demasiado la deforma.", "muestreo"),
     choice("muestreador", "Muestreador", "euler",
            [["euler", "Euler (recomendado)"], ["heun", "Heun (más fino, el doble de lento)"], ["dpmpp_2m", "DPM++ 2M"], ["uni_pc", "UniPC"]],
-           group="muestreo"),
+           group="muestreo", when=HUNYUAN),
     choice("programador", "Programador", "normal", [["normal", "Normal"], ["simple", "Simple"], ["beta", "Beta"], ["sgm_uniform", "SGM uniforme"]],
-           group="muestreo"),
-    num("shift", "Desplazamiento (shift)", 1.0, 0.5, 5, 0.1, "", "Reparto de los pasos del muestreo. 1 = plantilla oficial de ComfyUI.", "muestreo"),
+           group="muestreo", when=HUNYUAN),
+    num("shift", "Desplazamiento (shift)", 1.0, 0.5, 5, 0.1, "", "Reparto de los pasos del muestreo. 1 = plantilla oficial de ComfyUI.", "muestreo", HUNYUAN),
     num("semilla", "Semilla", 0, 0, 2**31 - 1, 1, "", "0 = aleatoria. Con varios intentos se usan semilla, semilla+1…", "muestreo"),
 ]
 
@@ -103,7 +134,8 @@ FIGURE_PRINT = [
     num("base_mm", "Alto de la base", 3, 1, 10, 0.5, group="tamano"),
     num("aplanar_mm", "Aplanar abajo", 1.0, 0, 6, 0.1, "mm", "Corta una rebanada para que pegue a la cama.", "tamano"),
     num("rotacion_z", "Girar", 0, 0, 360, 15, "°", group="tamano"),
-    flag("color", "Colores de la foto", True, "Pinta la figura con los colores de la imagen (vista previa y OBJ a color).", "superficie"),
+    flag("color", "Colores de la foto", True,
+         "Pinta la figura con los colores de la imagen (vista previa y OBJ a color). Con IDOL usa sus propios colores, de todo el contorno.", "superficie"),
     choice("pulido", "Pulido de superficie", "suave", [["ninguno", "Ninguno"], ["suave", "Suave"], ["medio", "Medio"], ["fuerte", "Fuerte"]],
            "Quita el escalonado de la malla sin encoger la pieza. Más fuerte también borra detalle fino.", "superficie"),
     num("engrosar_mm", "Engrosar partes finas", 0, 0, 1.5, 0.1, "mm",
@@ -156,12 +188,13 @@ FORMS = [
     {
         "clave": "figura",
         "nombre": "Figura 3D (IA)",
-        "descripcion": "Modelo completo generado por IA con Hunyuan3D. Para personajes, mascotas, juguetes y objetos.",
+        "descripcion": "Modelo completo generado por IA con Hunyuan3D o IDOL. Para personajes, mascotas, juguetes y objetos.",
         "requiere": "generador",
         "parametros": FIGURE_PARAMS,
         "impresion": FIGURE_PRINT,
         "perfiles": quality_profiles(
-            {"calidad": ("rapida", "alta", "maxima", "maxima"), "intentos": (1, 1, 1, 3), "pasos": (0, 0, 0, 70)},
+            {"calidad": ("rapida", "alta", "maxima", "maxima"), "intentos": (1, 1, 1, 3), "pasos": (0, 0, 0, 70),
+             "gaussianas": (262_144, 262_144, 262_144, 524_288)},
             {"voxeles": (256, 384, 512, 640), "caras_max": (250_000, 500_000, 1_000_000, 2_000_000), "solida": (False, False, False, True)},
         ),
     },

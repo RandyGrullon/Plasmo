@@ -58,6 +58,7 @@ Es una alternativa personal y gratuita a [Meshy](https://www.meshy.ai/), pensada
 |---|---|
 | 🧠 **Ve la foto** | Ollama (`qwen3.5:9b`) describe la imagen y sugiere la forma, el tamaño, los soportes y el material, con respuesta JSON validada. |
 | 🗿 **Figura 3D con IA** | Hunyuan3D 2.1 en ComfyUI con calidad **Máxima** por defecto (malla de 512 y 50 pasos). Plasmo arma el grafo y sigue el progreso paso a paso por WebSocket. |
+| 🌀 **IDOL con un clic** | [IDOL](https://github.com/speridlabs/idol-sdk) de speridlabs arma el objeto completo con gaussianas, con los colores de todo el contorno. **Ajustes → IDOL → Descargar e instalar** pone los nodos y los 4,7 GB de modelos en tu ComfyUI. Plasmo convierte el splat en malla imprimible, la gira para que mire como en la foto y deja bajar el `.ply`. |
 | 🎨 **Igual a la foto, también en color** | Proyecta los colores de la foto sobre la figura, alineando la silueta de la malla con la del recorte. La espalda toma el color de cada zona sin los rasgos del frente. Sale en la vista previa y en un **OBJ a color** que Bambu Studio y OrcaSlicer pasan a filamentos. |
 | 🖼️ **Seis formas sin GPU** | Relieve, litofanía (plana, curva o lámpara), llavero, imán, pixel art multicolor y cortador. Salen de un generador de sólidos que siempre da mallas cerradas. |
 | ✂️ **Detecta todo el sujeto** | Combina IS-Net y BiRefNet, cada uno con doble pasada (foto y espejo), sin deformar la proporción. Un filtro guiado por los colores de la foto ajusta los bordes, conserva **todos** los objetos (solo quita motas) y borra el halo del fondo. Da una nota de calidad con avisos ("puede estar cortado", "detecté 2 objetos"). |
@@ -213,6 +214,7 @@ En una laptop sin GPU, la profundidad Base tarda unos 13 s a 728 y 48 s a 1022, 
 |---|---|---|---|---|
 | Análisis y chat | `qwen3.5:9b` (alternativas: `qwen3.5:4b`, `gemma4:12b`) | 6.6 GB | Ollama · GPU | Ver su página en ollama.com |
 | Figura 3D | Hunyuan3D 2.1 (respaldo: 2.0) | 7.4 GB | ComfyUI · GPU | Tencent Hunyuan Community* |
+| Figura 3D a color (opcional) | IDOL (speridlabs) sobre los nodos TripoSplat de ComfyUI 0.43+ | 4,7 GB | ComfyUI · GPU, ~7 GB | Apache-2.0 (modelo), MIT (encoders de TripoSplat), GPL-3.0 (nodos ComfyUI-Idol) |
 | Quitar fondo | BiRefNet + IS-Net combinados (también U2-Net) | 224 + 179 MB | ONNX · CPU | MIT / Apache 2.0 |
 | Profundidad | Depth Anything V2 Small · Base · Large | 99 · 371 · 1275 MB | ONNX · CPU | Apache 2.0 (Small) · CC-BY-NC-4.0 (Base y Large, uso no comercial) |
 | Texto → imagen (opcional) | SDXL base 1.0 | 6.9 GB | ComfyUI · GPU | OpenRAIL++ |

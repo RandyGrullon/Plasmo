@@ -165,6 +165,23 @@ def find_comfy(settings: Settings) -> Launch | None:
     return None
 
 
+def comfy_root(settings: Settings) -> Path | None:
+    """La carpeta de la app de ComfyUI (la que tiene main.py, models y custom_nodes)."""
+    launch = find_comfy(settings)
+    if launch is None:
+        return None
+    if launch.kind == "portable":
+        return Path(launch.cwd) / "ComfyUI"
+    if launch.kind == "git":
+        return Path(launch.cwd)
+    if launch.kind == "escritorio":
+        return Path.home() / "Documents" / "ComfyUI"  # carpeta de datos por defecto de ComfyUI Desktop
+    folder = Path(settings.comfy_dir.strip().strip('"')) if settings.comfy_dir.strip() else None
+    if folder and (folder / "ComfyUI" / "main.py").is_file():
+        return folder / "ComfyUI"
+    return folder
+
+
 # Pistas del log de ComfyUI para que la espera diga en qué va
 COMFY_HINTS = [
     ("To see the GUI go to", "Ya casi…"),
